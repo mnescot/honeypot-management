@@ -111,11 +111,12 @@ prepare:
       echo "All required Terraform variables defined"
 
     # Verify oauth2-proxy upstream and OIDC settings are referenced in setup script
-    - grep -q "oauth2-proxy" scripts/tpot_setup.sh \
+    - |
+      grep -q "oauth2-proxy" scripts/tpot_setup.sh \
         || (echo "ERROR - oauth2-proxy not configured in tpot_setup.sh" && exit 1)
-    - grep -q "AZURE_TENANT_ID\|azure_tenant_id" scripts/tpot_setup.sh \
+      grep -q "AZURE_TENANT_ID\|azure_tenant_id" scripts/tpot_setup.sh \
         || (echo "ERROR - Azure tenant ID not referenced in tpot_setup.sh" && exit 1)
-    - echo "oauth2-proxy SAML/OIDC configuration present"
+      echo "oauth2-proxy SAML/OIDC configuration present"
 
     - echo "Prepare stage completed successfully"
   dependencies:
@@ -196,19 +197,20 @@ apply:
   script:
     - echo "Applying Terraform plan..."
     - terraform -chdir=terraform apply -input=false plan.tfplan
-    - echo ""
-    - echo "========================================="
-    - echo "T-Pot deployment completed successfully!"
-    - echo "========================================="
-    - echo ""
-    - TPOT_IP=$(terraform -chdir=terraform output -raw tpot_public_ip)
-    - echo "T-Pot Public IP   : ${TPOT_IP}"
-    - echo "Web UI (SAML SSO) : https://${TF_VAR_tpot_fqdn}"
-    - echo "Direct Web UI     : https://${TPOT_IP}:64297  (restricted by SG)"
-    - echo "SSH Management    : ssh -p 64295 tsec@${TPOT_IP}"
-    - echo ""
-    - echo "Note: Web UI access is through oauth2-proxy on port 443 with"
-    - echo "      Microsoft Entra ID OIDC authentication."
+    - |
+      TPOT_IP=$(terraform -chdir=terraform output -raw tpot_public_ip)
+      echo ""
+      echo "========================================="
+      echo "T-Pot deployment completed successfully!"
+      echo "========================================="
+      echo ""
+      echo "T-Pot Public IP   : ${TPOT_IP}"
+      echo "Web UI (SAML SSO) : https://${TF_VAR_tpot_fqdn}"
+      echo "Direct Web UI     : https://${TPOT_IP}:64297  (restricted by SG)"
+      echo "SSH Management    : ssh -p 64295 tsec@${TPOT_IP}"
+      echo ""
+      echo "Note: Web UI access is through oauth2-proxy on port 443 with"
+      echo "      Microsoft Entra ID OIDC authentication."
   dependencies:
     - plan
   when: manual
