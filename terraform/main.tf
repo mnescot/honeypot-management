@@ -69,6 +69,15 @@ resource "aws_instance" "tpot" {
   # need to receive traffic destined for other hosts in test scenarios.
   source_dest_check = false
 
+  # Enforce IMDSv2 (token-required) to prevent SSRF-based credential
+  # theft from honeypot containers that may be able to reach 169.254.169.254.
+  # hop_limit=1 prevents container workloads from reaching IMDS.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
   root_block_device {
     volume_type           = var.root_volume_type
     volume_size           = var.root_volume_size
@@ -80,18 +89,23 @@ resource "aws_instance" "tpot" {
     }
   }
 
+  # Secrets are NOT passed through user_data.  They are stored in SSM
+  # Parameter Store (SecureString) and fetched at runtime by tpot_setup.sh
+  # using the instance IAM role.  user_data therefore contains no credentials
+  # and is safe to expose via EC2 metadata or Terraform state.
   user_data = templatefile("${path.module}/../user_data.sh", {
-    aws_region              = var.aws_region
-    tpot_hostname           = var.tpot_hostname
-    tpot_web_user           = var.tpot_web_user
-    tpot_web_password       = var.tpot_web_password
-    tpot_fqdn               = var.tpot_fqdn
-    azure_tenant_id         = var.azure_tenant_id
-    azure_client_id         = var.azure_client_id
-    azure_client_secret     = var.azure_client_secret
-    oauth2_cookie_secret    = var.oauth2_cookie_secret
-    setup_script_s3_bucket  = var.setup_script_s3_bucket
-    setup_script_s3_key     = var.setup_script_s3_key
+    aws_region                   = var.aws_region
+    tpot_hostname                = var.tpot_hostname
+    tpot_web_user                = var.tpot_web_user
+    tpot_fqdn                    = var.tpot_fqdn
+    azure_tenant_id              = var.azure_tenant_id
+    azure_client_id              = var.azure_client_id
+    setup_script_s3_bucket       = var.setup_script_s3_bucket
+    setup_script_s3_key          = var.setup_script_s3_key
+    # SSM paths — non-sensitive; the values are fetched at runtime
+    ssm_path_web_password        = aws_ssm_parameter.tpot_web_password.name
+    ssm_path_azure_client_secret = aws_ssm_parameter.azure_client_secret.name
+    ssm_path_oauth2_cookie_secret = aws_ssm_parameter.oauth2_cookie_secret.name
   })
 
   # Ensure the instance profile exists before the instance is created

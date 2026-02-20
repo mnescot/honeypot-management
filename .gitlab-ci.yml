@@ -61,19 +61,33 @@ upload-scripts:
         exit 1
       fi
 
+      # Compute SHA256 digest before upload so it reflects exactly what goes to S3
+      sha256sum scripts/tpot_setup.sh | awk '{print $1}' > /tmp/tpot_setup.sh.sha256
+      echo "SHA256: $(cat /tmp/tpot_setup.sh.sha256)"
+
       # Upload main setup script
       aws s3 cp scripts/tpot_setup.sh \
         "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}" \
         --region "$TF_VAR_aws_region" \
         --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},pipeline-id=${CI_PIPELINE_ID}"
 
-      echo "Setup script uploaded: s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}"
+      # Upload SHA256 digest alongside the script.
+      # user_data.sh downloads both and verifies integrity before execution.
+      aws s3 cp /tmp/tpot_setup.sh.sha256 \
+        "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}.sha256" \
+        --region "$TF_VAR_aws_region" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},pipeline-id=${CI_PIPELINE_ID}"
 
-      # Verify upload
+      echo "Setup script uploaded: s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}"
+      echo "SHA256 digest uploaded: s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}.sha256"
+
+      # Verify both objects are present
       aws s3 ls "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}" \
         --region "$TF_VAR_aws_region"
+      aws s3 ls "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}.sha256" \
+        --region "$TF_VAR_aws_region"
 
-    - echo "All scripts uploaded successfully"
+    - echo "All scripts and digests uploaded successfully"
   dependencies:
     - validate-scripts
   rules:

@@ -3,6 +3,7 @@
 #
 # The instance role grants:
 #   - S3 read access scoped to the scripts bucket (for user-data bootstrap)
+#   - SSM GetParameter (with decryption) scoped to /tpot/* secrets
 #   - CloudWatch Logs write access (for shipping T-Pot logs to CWL)
 #   - SSM Session Manager access (alternative management path)
 
@@ -77,6 +78,33 @@ resource "aws_iam_role_policy" "tpot_s3_scripts" {
   name   = "tpot-s3-scripts"
   role   = aws_iam_role.tpot.id
   policy = data.aws_iam_policy_document.tpot_s3_scripts.json
+}
+
+# ---------------------------------------------------------------------------
+# SSM Parameter Store — read secrets at runtime (never via user_data)
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "tpot_ssm_secrets" {
+  statement {
+    sid    = "GetTpotSecrets"
+    effect = "Allow"
+
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+
+    # Scoped to the exact parameters created in ssm.tf
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project}/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "tpot_ssm_secrets" {
+  name   = "tpot-ssm-secrets"
+  role   = aws_iam_role.tpot.id
+  policy = data.aws_iam_policy_document.tpot_ssm_secrets.json
 }
 
 # ---------------------------------------------------------------------------

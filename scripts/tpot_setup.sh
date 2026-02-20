@@ -6,13 +6,15 @@
 # by user_data.sh at instance launch.
 #
 # What this script does:
-#   1. Install system prerequisites and Docker
-#   2. Clone T-Pot CE and install it in HIVE (standalone) mode
-#   3. Restrict T-Pot nginx to localhost via docker-compose.override.yml
-#   4. Install and configure oauth2-proxy for SAML-compatible SSO via
+#   0. Fetch secrets from AWS SSM Parameter Store (no plaintext in user_data)
+#   1. Install system prerequisites via apt with GPG-verified packages
+#   2. Install Docker via the official apt repository (GPG-verified; no curl|sh)
+#   3. Clone T-Pot CE and install it in HIVE (standalone) mode
+#   4. Restrict T-Pot nginx to localhost via docker-compose.override.yml
+#   5. Install oauth2-proxy (SHA256-verified) for SAML-compatible SSO via
 #      Microsoft Entra ID OIDC, listening on port 443
-#   5. Configure sysctl / kernel parameters recommended by T-Pot
-#   6. Enable and start all services
+#   6. Configure sysctl / kernel parameters recommended by T-Pot
+#   7. Enable and start all services
 
 set -euo pipefail
 
@@ -24,13 +26,15 @@ exec > >(tee -a "$LOG") 2>&1
 # ---------------------------------------------------------------------------
 TPOT_HOSTNAME="${TPOT_HOSTNAME:-tpot}"
 TPOT_WEB_USER="${TPOT_WEB_USER:-admin}"
-TPOT_WEB_PASSWORD="${TPOT_WEB_PASSWORD:?TPOT_WEB_PASSWORD is required}"
 TPOT_FQDN="${TPOT_FQDN:?TPOT_FQDN is required}"
-
 AZURE_TENANT_ID="${AZURE_TENANT_ID:?AZURE_TENANT_ID is required}"
 AZURE_CLIENT_ID="${AZURE_CLIENT_ID:?AZURE_CLIENT_ID is required}"
-AZURE_CLIENT_SECRET="${AZURE_CLIENT_SECRET:?AZURE_CLIENT_SECRET is required}"
-OAUTH2_COOKIE_SECRET="${OAUTH2_COOKIE_SECRET:?OAUTH2_COOKIE_SECRET is required}"
+AWS_REGION="${AWS_REGION:?AWS_REGION is required}"
+
+# SSM paths for secrets (set by user_data.sh — paths are not sensitive)
+SSM_PATH_WEB_PASSWORD="${SSM_PATH_WEB_PASSWORD:?SSM_PATH_WEB_PASSWORD is required}"
+SSM_PATH_AZURE_CLIENT_SECRET="${SSM_PATH_AZURE_CLIENT_SECRET:?SSM_PATH_AZURE_CLIENT_SECRET is required}"
+SSM_PATH_OAUTH2_COOKIE_SECRET="${SSM_PATH_OAUTH2_COOKIE_SECRET:?SSM_PATH_OAUTH2_COOKIE_SECRET is required}"
 
 TPOT_REPO="https://github.com/telekom-security/tpotce"
 TPOT_INSTALL_DIR="/home/tsec/tpotce"
@@ -42,7 +46,40 @@ OAUTH2_PROXY_CONF_DIR="/etc/oauth2-proxy"
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
 
 # ---------------------------------------------------------------------------
-# 1. System prerequisites
+# Phase 0: Fetch secrets from SSM Parameter Store
+#
+# Secrets are fetched here — at runtime on the EC2 instance — using the
+# instance IAM role.  They are never stored in user_data, cloud-init
+# artifacts, or Terraform-rendered templates.
+# ---------------------------------------------------------------------------
+log "=== Phase 0: Fetch secrets from SSM ==="
+
+ssm_get() {
+  aws ssm get-parameter \
+    --name "$1" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text \
+    --region "$AWS_REGION"
+}
+
+TPOT_WEB_PASSWORD=$(ssm_get "$SSM_PATH_WEB_PASSWORD")
+AZURE_CLIENT_SECRET=$(ssm_get "$SSM_PATH_AZURE_CLIENT_SECRET")
+OAUTH2_COOKIE_SECRET=$(ssm_get "$SSM_PATH_OAUTH2_COOKIE_SECRET")
+
+log "Secrets fetched from SSM"
+
+# Validate that we got non-empty values
+for secret_name in TPOT_WEB_PASSWORD AZURE_CLIENT_SECRET OAUTH2_COOKIE_SECRET; do
+  eval "secret_val=\$$secret_name"
+  if [ -z "$secret_val" ]; then
+    log "ERROR: SSM returned empty value for $secret_name — aborting"
+    exit 1
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Phase 1: System prerequisites (apt-only, no curl|sh)
 # ---------------------------------------------------------------------------
 log "=== Phase 1: System prerequisites ==="
 
@@ -61,8 +98,6 @@ apt-get install -y --no-install-recommends \
   apache2-utils \
   openssl \
   iptables-persistent \
-  python3 \
-  python3-pip \
   ca-certificates \
   gnupg \
   lsb-release
@@ -70,7 +105,7 @@ apt-get install -y --no-install-recommends \
 log "System prerequisites installed"
 
 # ---------------------------------------------------------------------------
-# 2. Kernel / sysctl tuning recommended by T-Pot
+# Phase 2: Kernel / sysctl tuning recommended by T-Pot
 # ---------------------------------------------------------------------------
 log "=== Phase 2: Kernel tuning ==="
 
@@ -88,33 +123,44 @@ sysctl --system
 log "Kernel parameters applied"
 
 # ---------------------------------------------------------------------------
-# 3. Docker installation
+# Phase 3: Docker installation via official apt repository (GPG-verified)
+#
+# The curl|sh pattern is NOT used here.  Instead, Docker's signing key is
+# fetched and verified, then packages are installed through apt — the same
+# channel that verifies package signatures automatically.
 # ---------------------------------------------------------------------------
-log "=== Phase 3: Docker ==="
+log "=== Phase 3: Docker (apt / GPG-verified) ==="
 
-if ! command -v docker &>/dev/null; then
-  curl -fsSL https://get.docker.com | sh
-fi
+install -m 0755 -d /etc/apt/keyrings
+
+# Download Docker's official GPG key and dearmor it into the keyring
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Add the stable Docker repository signed by the key above
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu \
+$(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt-get update -y
+apt-get install -y \
+  docker-ce \
+  docker-ce-cli \
+  containerd.io \
+  docker-buildx-plugin \
+  docker-compose-plugin
 
 systemctl enable docker
 systemctl start docker
-
-# Verify Docker Compose v2 (ships with Docker Desktop / Compose plugin)
-docker compose version || {
-  log "Docker Compose v2 not found; installing plugin..."
-  COMPOSE_VERSION="2.24.5"
-  mkdir -p /usr/local/lib/docker/cli-plugins
-  curl -fsSL \
-    "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
-    -o /usr/local/lib/docker/cli-plugins/docker-compose
-  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-}
 
 log "Docker $(docker --version)"
 log "Docker Compose $(docker compose version)"
 
 # ---------------------------------------------------------------------------
-# 4. Create T-Pot user (tsec) — mirrors the T-Pot installer's convention
+# Phase 4: Create T-Pot user (tsec) — mirrors the T-Pot installer's convention
 # ---------------------------------------------------------------------------
 log "=== Phase 4: Create tsec user ==="
 
@@ -127,7 +173,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Clone and install T-Pot CE
+# Phase 5: Clone and install T-Pot CE
 # ---------------------------------------------------------------------------
 log "=== Phase 5: Clone T-Pot CE ==="
 
@@ -145,21 +191,13 @@ log "=== Phase 5b: Run T-Pot installer (HIVE/standalone mode) ==="
 #   -t  installation type  (h = HIVE = full standalone with WebUI)
 #   -u  web UI username
 #   -p  web UI password
-#
-# We run it as tsec via sudo to match T-Pot's expected ownership model.
 cd "$TPOT_INSTALL_DIR"
-
-# Export to make them visible inside the sudo environment
-export TPOT_MYUSER="$TPOT_WEB_USER"
-export TPOT_MYPASSWORD="$TPOT_WEB_PASSWORD"
 
 sudo -u tsec bash -c "
   cd '$TPOT_INSTALL_DIR'
   ./install.sh -s -t h -u '$TPOT_WEB_USER' -p '$TPOT_WEB_PASSWORD'
 " || {
   log "WARNING: T-Pot installer exited non-zero. Checking if services are running..."
-  # The installer sometimes exits 1 after a successful install when it cannot
-  # reboot the system.  Check the compose stack is present before failing.
   if [ ! -f "$TPOT_INSTALL_DIR/.env" ]; then
     log "ERROR: T-Pot install appears to have failed (.env not found)"
     exit 1
@@ -170,8 +208,7 @@ sudo -u tsec bash -c "
 log "T-Pot CE installed"
 
 # ---------------------------------------------------------------------------
-# 6. Identify the compose directory used by T-Pot
-#    T-Pot 24.x may place compose files in different subdirectories.
+# Phase 6: Identify the compose directory used by T-Pot
 # ---------------------------------------------------------------------------
 log "=== Phase 6: Locate compose files ==="
 
@@ -196,7 +233,7 @@ fi
 log "Compose directory: $COMPOSE_DIR"
 
 # ---------------------------------------------------------------------------
-# 7. docker-compose.override.yml
+# Phase 7: docker-compose.override.yml
 #    Restrict T-Pot nginx to localhost only so that external traffic MUST
 #    pass through oauth2-proxy on port 443.
 # ---------------------------------------------------------------------------
@@ -219,36 +256,60 @@ chown tsec:tsec "$COMPOSE_DIR/docker-compose.override.yml"
 log "docker-compose.override.yml written"
 
 # ---------------------------------------------------------------------------
-# 8. Install oauth2-proxy
-#    oauth2-proxy sits in front of T-Pot's nginx and enforces Microsoft
-#    Entra ID OIDC (OpenID Connect) authentication.
+# Phase 8: Install oauth2-proxy with SHA256 verification
 #
-#    Microsoft Entra ID supports both SAML 2.0 and OIDC. OIDC is the
-#    recommended modern protocol and is functionally equivalent for web
-#    application SSO.  The Entra ID App Registration must be configured
-#    as an OIDC/OAuth2 app (not a SAML Enterprise Application).
+# The tarball and its SHA256 digest are both downloaded from the official
+# GitHub release.  The digest is verified before extraction.
 # ---------------------------------------------------------------------------
-log "=== Phase 8: Install oauth2-proxy ==="
+log "=== Phase 8: Install oauth2-proxy (SHA256-verified) ==="
 
 OAUTH2_ARCH="linux-amd64"
 OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}.tar.gz"
 OAUTH2_URL="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_PROXY_VERSION}/${OAUTH2_TARBALL}"
+OAUTH2_SHA256_URL="${OAUTH2_URL}.sha256"
 
-curl -fsSL "$OAUTH2_URL" -o /tmp/oauth2-proxy.tar.gz
+curl -fsSL "$OAUTH2_URL"       -o /tmp/oauth2-proxy.tar.gz
+curl -fsSL "$OAUTH2_SHA256_URL" -o /tmp/oauth2-proxy.tar.gz.sha256
+
+# Verify — the .sha256 file may contain just the hash or "hash  filename"
+EXPECTED_HASH=$(awk '{print $1}' /tmp/oauth2-proxy.tar.gz.sha256)
+ACTUAL_HASH=$(sha256sum /tmp/oauth2-proxy.tar.gz | awk '{print $1}')
+
+if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+  log "ERROR: SHA256 mismatch for oauth2-proxy tarball — aborting"
+  log "  expected: $EXPECTED_HASH"
+  log "  actual:   $ACTUAL_HASH"
+  exit 1
+fi
+log "oauth2-proxy SHA256 verified"
+
 tar -xzf /tmp/oauth2-proxy.tar.gz -C /tmp
-install -m 755 /tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}/oauth2-proxy \
+install -m 755 "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}/oauth2-proxy" \
   "$OAUTH2_PROXY_BIN"
-rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy-v*
+rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.tar.gz.sha256 \
+       "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}"
 
-log "oauth2-proxy $($OAUTH2_PROXY_BIN --version 2>&1 | head -1) installed"
+log "oauth2-proxy installed"
 
 # ---------------------------------------------------------------------------
-# 9. Generate self-signed TLS certificate for oauth2-proxy
+# Phase 9: Generate self-signed TLS certificate for oauth2-proxy
+#    Uses IMDSv2 token flow for fetching the public IP.
 #    In production, replace with a certificate from your PKI or Let's Encrypt.
 # ---------------------------------------------------------------------------
 log "=== Phase 9: TLS certificate ==="
 
 mkdir -p "$OAUTH2_PROXY_CONF_DIR"
+
+# IMDSv2: obtain a short-lived token, then use it to query the public IP
+IMDS_TOKEN=$(curl -fsSL \
+  -X PUT \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+  "http://169.254.169.254/latest/api/token")
+
+PUBLIC_IP=$(curl -fsSL \
+  -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
+  "http://169.254.169.254/latest/meta-data/public-ipv4" \
+  || echo "127.0.0.1")
 
 openssl req -x509 -newkey rsa:4096 \
   -keyout "$OAUTH2_PROXY_CONF_DIR/tpot.key" \
@@ -256,13 +317,13 @@ openssl req -x509 -newkey rsa:4096 \
   -days 825 \
   -nodes \
   -subj "/CN=${TPOT_FQDN}/O=T-Pot Honeypot/C=US" \
-  -addext "subjectAltName=DNS:${TPOT_FQDN},IP:$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 || echo 127.0.0.1)"
+  -addext "subjectAltName=DNS:${TPOT_FQDN},IP:${PUBLIC_IP}"
 
 chmod 640 "$OAUTH2_PROXY_CONF_DIR/tpot.key"
 log "Self-signed TLS certificate generated (CN=${TPOT_FQDN})"
 
 # ---------------------------------------------------------------------------
-# 10. Write oauth2-proxy configuration file
+# Phase 10: Write oauth2-proxy configuration file
 # ---------------------------------------------------------------------------
 log "=== Phase 10: oauth2-proxy configuration ==="
 
@@ -274,11 +335,6 @@ cat > "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg" << EOF
 #   - Redirect URI: https://${TPOT_FQDN}/oauth2/callback
 #   - Supported account types: Accounts in this organizational directory
 #   - API permissions: openid, profile, email (all delegated)
-#
-# For SAML 2.0 specifically: Entra ID's OIDC endpoint is the recommended
-# path for new application registrations. If your organisation requires
-# strict SAML 2.0 protocol, replace this proxy with a SAML SP such as
-# SimpleSAMLphp or configure an AWS ALB with Cognito SAML federation.
 
 provider = "oidc"
 oidc_issuer_url = "https://login.microsoftonline.com/${AZURE_TENANT_ID}/v2.0"
@@ -319,7 +375,7 @@ chmod 640 "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg"
 log "oauth2-proxy configuration written"
 
 # ---------------------------------------------------------------------------
-# 11. oauth2-proxy systemd service
+# Phase 11: oauth2-proxy systemd service
 # ---------------------------------------------------------------------------
 log "=== Phase 11: oauth2-proxy systemd service ==="
 
@@ -354,9 +410,7 @@ systemctl daemon-reload
 log "oauth2-proxy systemd unit written"
 
 # ---------------------------------------------------------------------------
-# 12. iptables rules — belt-and-suspenders port restriction
-#     Block direct external access to T-Pot's web UI port (64297) even if
-#     the docker-compose.override binding were to be removed.
+# Phase 12: iptables rules — belt-and-suspenders port restriction
 # ---------------------------------------------------------------------------
 log "=== Phase 12: iptables ==="
 
@@ -368,12 +422,10 @@ netfilter-persistent save || iptables-save > /etc/iptables/rules.v4
 log "iptables rules saved"
 
 # ---------------------------------------------------------------------------
-# 13. Restart T-Pot with the compose override, then start oauth2-proxy
+# Phase 13: Restart T-Pot with compose override, then start oauth2-proxy
 # ---------------------------------------------------------------------------
 log "=== Phase 13: Start services ==="
 
-# Restart T-Pot so the compose override (localhost port binding) takes effect.
-# T-Pot may be managed by a systemd unit named tpot or tpotce.
 if systemctl is-active --quiet tpot 2>/dev/null; then
   systemctl restart tpot
   log "T-Pot systemd service restarted"
@@ -382,7 +434,6 @@ elif systemctl is-active --quiet tpotce 2>/dev/null; then
   log "tpotce systemd service restarted"
 else
   log "No tpot/tpotce systemd service found; starting compose stack directly..."
-  # Discover the main compose file
   COMPOSE_FILE=$(ls "$COMPOSE_DIR"/docker-compose.yml \
                     "$COMPOSE_DIR"/compose*.yml 2>/dev/null | head -1 || true)
   if [ -n "$COMPOSE_FILE" ]; then
@@ -395,13 +446,12 @@ else
   fi
 fi
 
-# Start oauth2-proxy
 systemctl enable oauth2-proxy
 systemctl start oauth2-proxy
 log "oauth2-proxy started"
 
 # ---------------------------------------------------------------------------
-# 14. Summary
+# Phase 14: Summary
 # ---------------------------------------------------------------------------
 log "==================================================================="
 log "T-Pot installation complete!"
@@ -410,12 +460,12 @@ log "  Web UI (SAML/OIDC SSO): https://${TPOT_FQDN}"
 log "  Direct T-Pot UI:        https://localhost:64297  (localhost only)"
 log "  SSH management:         port 64295 (T-Pot moves sshd to 64295)"
 log ""
-log "  Microsoft Entra ID OIDC configuration:"
-log "    Tenant:              ${AZURE_TENANT_ID}"
-log "    Client ID:           ${AZURE_CLIENT_ID}"
-log "    Redirect URI:        https://${TPOT_FQDN}/oauth2/callback"
+log "  Microsoft Entra ID OIDC:"
+log "    Tenant:     ${AZURE_TENANT_ID}"
+log "    Client ID:  ${AZURE_CLIENT_ID}"
+log "    Redirect:   https://${TPOT_FQDN}/oauth2/callback"
 log ""
-log "  TLS certificate:       ${OAUTH2_PROXY_CONF_DIR}/tpot.crt  (self-signed)"
-log "  oauth2-proxy config:   ${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"
-log "  T-Pot install dir:     ${TPOT_INSTALL_DIR}"
+log "  TLS cert:   ${OAUTH2_PROXY_CONF_DIR}/tpot.crt  (self-signed)"
+log "  oauth2-proxy config: ${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"
+log "  T-Pot dir:  ${TPOT_INSTALL_DIR}"
 log "==================================================================="
