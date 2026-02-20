@@ -1,0 +1,132 @@
+# terraform/iam.tf
+# IAM role and instance profile for the T-Pot EC2 instance.
+#
+# The instance role grants:
+#   - S3 read access scoped to the scripts bucket (for user-data bootstrap)
+#   - CloudWatch Logs write access (for shipping T-Pot logs to CWL)
+#   - SSM Session Manager access (alternative management path)
+
+data "aws_caller_identity" "current" {}
+
+# ---------------------------------------------------------------------------
+# Trust policy — allow EC2 to assume this role
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "ec2_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# IAM role
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "tpot" {
+  name               = "${var.project}-ec2-role"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume_role.json
+
+  tags = {
+    Name = "${var.project}-ec2-role"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Inline policy — S3 read for setup scripts
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "tpot_s3_scripts" {
+  statement {
+    sid    = "ReadSetupScripts"
+    effect = "Allow"
+
+    actions = [
+      "s3:GetObject",
+      "s3:HeadObject",
+    ]
+
+    resources = [
+      "arn:aws:s3:::${var.setup_script_s3_bucket}/${var.setup_script_s3_key}",
+      "arn:aws:s3:::${var.setup_script_s3_bucket}/tpot/*",
+    ]
+  }
+
+  statement {
+    sid    = "ListScriptsBucket"
+    effect = "Allow"
+
+    actions = ["s3:ListBucket"]
+
+    resources = ["arn:aws:s3:::${var.setup_script_s3_bucket}"]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["tpot/*"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "tpot_s3_scripts" {
+  name   = "tpot-s3-scripts"
+  role   = aws_iam_role.tpot.id
+  policy = data.aws_iam_policy_document.tpot_s3_scripts.json
+}
+
+# ---------------------------------------------------------------------------
+# CloudWatch Logs — ship T-Pot and system logs
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "tpot_cloudwatch" {
+  statement {
+    sid    = "CloudWatchLogs"
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+    ]
+
+    resources = [
+      "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/tpot/*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "tpot_cloudwatch" {
+  name   = "tpot-cloudwatch"
+  role   = aws_iam_role.tpot.id
+  policy = data.aws_iam_policy_document.tpot_cloudwatch.json
+}
+
+# ---------------------------------------------------------------------------
+# Attach AWS managed SSM policy — enables Session Manager as a fallback
+# management path without needing a direct SSH security group rule
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.tpot.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# ---------------------------------------------------------------------------
+# Instance profile
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_instance_profile" "tpot" {
+  name = "${var.project}-ec2-profile"
+  role = aws_iam_role.tpot.name
+
+  tags = {
+    Name = "${var.project}-ec2-profile"
+  }
+}

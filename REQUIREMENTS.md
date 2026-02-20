@@ -1,0 +1,6 @@
+-Deploy T-Pot honeypot application (https://github.com/telekom-security/tpotce) to existing AWS account and existing VPC using Terraform and EC2
+-Deployment will be managed by GitLab CI/CD through a private GitLab instance and a GitLab repository mirrored to pull from this GitHub repository
+-Use the .gitlab-ci.yml present in this repository as a model for deploying the T-Pot application. It was pasted here from another similar project that deployed another open source security-focused application Caldera to the same AWS account and VPC. The T-Pot and Caldera apps will be separate but complimentary in their use by our information security team. Disregard specific values in the GitLab configuration, but use the same deployment stages.
+-An AWS-hosted GitLab runner with and assigned AWS role will manage the deployment; no AWS credential management is required here.
+-Build SAML authentication compatible with Microsoft Entra ID into the T-Pot application
+-Use Ubuntu AWS EC2 instances for the Hive and Sensor T-Pot machines. We are open to running both roles on a single instance if functionality and performance are acceptable 

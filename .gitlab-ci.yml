@@ -1,0 +1,237 @@
+# .gitlab-ci.yml
+# T-Pot honeypot deployment pipeline
+# Stages mirror the Caldera reference pipeline: validate-scripts, upload-scripts,
+# prepare, validate, plan, apply, destroy
+
+stages:
+  - validate-scripts
+  - upload-scripts
+  - prepare
+  - validate
+  - plan
+  - apply
+  - destroy
+
+# Global variables for all jobs
+variables:
+  SETUP_SCRIPT_S3_KEY: "tpot/tpot_setup.sh"
+  COMPOSE_OVERRIDE_S3_KEY: "tpot/docker-compose.override.yml"
+  OAUTH2_PROXY_ENV_S3_KEY: "tpot/oauth2-proxy.env"
+
+# ---------------------------------------------------------------------------
+# Stage: validate-scripts
+# Ensure all shell scripts are syntactically valid before uploading to S3
+# ---------------------------------------------------------------------------
+validate-scripts:
+  stage: validate-scripts
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache bash shellcheck
+  script:
+    - echo "Validating setup scripts..."
+    - test -f scripts/tpot_setup.sh || (echo "ERROR - tpot_setup.sh not found" && exit 1)
+    - test -f user_data.sh         || (echo "ERROR - user_data.sh not found" && exit 1)
+    - bash -n scripts/tpot_setup.sh || (echo "ERROR - Syntax error in tpot_setup.sh" && exit 1)
+    - bash -n user_data.sh          || (echo "ERROR - Syntax error in user_data.sh" && exit 1)
+    - shellcheck --severity=error scripts/tpot_setup.sh || true
+    - shellcheck --severity=error user_data.sh          || true
+    - echo "All scripts validated successfully"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
+# Stage: upload-scripts
+# Push the T-Pot setup script and supplementary config files to S3 so the
+# EC2 user-data bootstrap can download them at launch time
+# ---------------------------------------------------------------------------
+upload-scripts:
+  stage: upload-scripts
+  image:
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  before_script:
+    - echo "AWS CLI version:"
+    - aws --version
+  script:
+    - echo "Uploading T-Pot setup script to S3..."
+    - |
+      if [ -z "$S3_SCRIPTS_BUCKET" ]; then
+        echo "ERROR - S3_SCRIPTS_BUCKET not set"
+        exit 1
+      fi
+
+      # Upload main setup script
+      aws s3 cp scripts/tpot_setup.sh \
+        "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}" \
+        --region "$TF_VAR_aws_region" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},pipeline-id=${CI_PIPELINE_ID}"
+
+      echo "Setup script uploaded: s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}"
+
+      # Verify upload
+      aws s3 ls "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}" \
+        --region "$TF_VAR_aws_region"
+
+    - echo "All scripts uploaded successfully"
+  dependencies:
+    - validate-scripts
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
+# Stage: prepare
+# Validate supplementary configuration artifacts (docker-compose override,
+# oauth2-proxy template) — the equivalent of the Caldera pipeline's
+# build-magma stage.  T-Pot has no frontend build step, so this stage
+# focuses on config validation.
+# ---------------------------------------------------------------------------
+prepare:
+  stage: prepare
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache python3 py3-pip
+    - pip3 install PyYAML --quiet
+  script:
+    - echo "Validating T-Pot configuration artifacts..."
+
+    # Validate that required Terraform variable names are present in variables.tf
+    - |
+      REQUIRED_VARS="aws_region vpc_id subnet_ids instance_type key_name \
+        tpot_admin_cidr tpot_web_user tpot_web_password tpot_hostname tpot_fqdn \
+        azure_tenant_id azure_client_id azure_client_secret oauth2_cookie_secret \
+        setup_script_s3_bucket setup_script_s3_key"
+
+      echo "Checking Terraform variable definitions..."
+      for var in $REQUIRED_VARS; do
+        grep -q "variable \"${var}\"" terraform/variables.tf \
+          || (echo "ERROR - Missing Terraform variable: ${var}" && exit 1)
+      done
+      echo "All required Terraform variables defined"
+
+    # Verify oauth2-proxy upstream and OIDC settings are referenced in setup script
+    - grep -q "oauth2-proxy" scripts/tpot_setup.sh \
+        || (echo "ERROR - oauth2-proxy not configured in tpot_setup.sh" && exit 1)
+    - grep -q "AZURE_TENANT_ID\|azure_tenant_id" scripts/tpot_setup.sh \
+        || (echo "ERROR - Azure tenant ID not referenced in tpot_setup.sh" && exit 1)
+    - echo "oauth2-proxy SAML/OIDC configuration present"
+
+    - echo "Prepare stage completed successfully"
+  dependencies:
+    - upload-scripts
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
+# Reusable Terraform init template
+# ---------------------------------------------------------------------------
+.terraform-init: &terraform-init
+  image:
+    name: hashicorp/terraform:1.5.7
+    entrypoint:
+      - '/usr/bin/env'
+      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+  before_script:
+    - |
+      set -e
+      terraform --version
+
+      # Pass S3 script locations to Terraform
+      export TF_VAR_setup_script_s3_bucket="${S3_SCRIPTS_BUCKET}"
+      export TF_VAR_setup_script_s3_key="${SETUP_SCRIPT_S3_KEY}"
+
+      # Initialize with the S3 remote backend (bucket/key/region supplied by CI vars)
+      terraform -chdir=terraform init \
+        -backend-config="bucket=${S3_STATE_BUCKET}" \
+        -backend-config="key=${S3_STATE_KEY}" \
+        -backend-config="region=${TF_VAR_aws_region}"
+
+# ---------------------------------------------------------------------------
+# Stage: validate
+# Run `terraform validate` to catch config errors early
+# ---------------------------------------------------------------------------
+validate:
+  <<: *terraform-init
+  stage: validate
+  script:
+    - terraform -chdir=terraform validate
+    - echo "Terraform configuration is valid"
+  dependencies:
+    - prepare
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
+# Stage: plan
+# Generate and save a Terraform plan artifact for review before apply
+# ---------------------------------------------------------------------------
+plan:
+  <<: *terraform-init
+  stage: plan
+  script:
+    - echo "Creating Terraform plan..."
+    - terraform -chdir=terraform plan -out=plan.tfplan
+    - echo "Plan created successfully"
+  artifacts:
+    name: terraform-plan-${CI_COMMIT_SHORT_SHA}
+    paths:
+      - terraform/plan.tfplan
+    expire_in: 1 hour
+  dependencies:
+    - validate
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
+# Stage: apply
+# Apply the saved plan — manual trigger only, main branch only
+# ---------------------------------------------------------------------------
+apply:
+  <<: *terraform-init
+  stage: apply
+  script:
+    - echo "Applying Terraform plan..."
+    - terraform -chdir=terraform apply -input=false plan.tfplan
+    - echo ""
+    - echo "========================================="
+    - echo "T-Pot deployment completed successfully!"
+    - echo "========================================="
+    - echo ""
+    - TPOT_IP=$(terraform -chdir=terraform output -raw tpot_public_ip)
+    - echo "T-Pot Public IP   : ${TPOT_IP}"
+    - echo "Web UI (SAML SSO) : https://${TF_VAR_tpot_fqdn}"
+    - echo "Direct Web UI     : https://${TPOT_IP}:64297  (restricted by SG)"
+    - echo "SSH Management    : ssh -p 64295 tsec@${TPOT_IP}"
+    - echo ""
+    - echo "Note: Web UI access is through oauth2-proxy on port 443 with"
+    - echo "      Microsoft Entra ID OIDC authentication."
+  dependencies:
+    - plan
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  environment:
+    name: production
+    url: https://${TF_VAR_tpot_fqdn}
+
+# ---------------------------------------------------------------------------
+# Stage: destroy
+# Tear down all T-Pot infrastructure — manual trigger only
+# ---------------------------------------------------------------------------
+destroy:
+  <<: *terraform-init
+  stage: destroy
+  script:
+    - echo "WARNING - Destroying T-Pot infrastructure..."
+    - terraform -chdir=terraform destroy -auto-approve
+    - echo "Infrastructure destroyed successfully"
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  environment:
+    name: production
+    action: stop
