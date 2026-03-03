@@ -187,7 +187,7 @@ plan:
   stage: plan
   script:
     - echo "Creating Terraform plan..."
-    - terraform -chdir=terraform plan -out=plan.tfplan
+    - terraform -chdir=terraform plan -input=false -out=plan.tfplan
     - echo "Plan created successfully"
   artifacts:
     name: terraform-plan-${CI_COMMIT_SHORT_SHA}
