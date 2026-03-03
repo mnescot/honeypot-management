@@ -105,8 +105,7 @@ prepare:
   stage: prepare
   image: alpine:latest
   before_script:
-    - apk add --no-cache python3 py3-pip
-    - pip3 install PyYAML --quiet
+    - apk add --no-cache grep
   script:
     - echo "Validating T-Pot configuration artifacts..."
 
