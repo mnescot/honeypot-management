@@ -144,3 +144,9 @@ variable "project" {
   type        = string
   default     = "tpot-honeypot"
 }
+
+variable "ssm_kms_key_arn" {
+  description = "ARN of the KMS key configured in SSM Session Manager preferences for session encryption. Required when your account enforces KMS-encrypted SSM sessions. Leave empty if sessions are unencrypted."
+  type        = string
+  default     = ""
+}

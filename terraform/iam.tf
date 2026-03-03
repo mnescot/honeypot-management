@@ -147,6 +147,37 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 # ---------------------------------------------------------------------------
+# KMS — Session Manager session encryption
+#
+# When SSM Session Manager preferences enforce KMS encryption, the EC2
+# instance role must be able to decrypt the session data key.
+# Set var.ssm_kms_key_arn to the key ARN shown in the Session Manager
+# preferences console (or the error message at session start).
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "tpot_ssm_kms" {
+  count = var.ssm_kms_key_arn != "" ? 1 : 0
+
+  name = "tpot-ssm-kms"
+  role = aws_iam_role.tpot.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SessionManagerKmsDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+        ]
+        Resource = var.ssm_kms_key_arn
+      }
+    ]
+  })
+}
+
+# ---------------------------------------------------------------------------
 # Instance profile
 # ---------------------------------------------------------------------------
 
