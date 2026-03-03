@@ -150,3 +150,9 @@ variable "ssm_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+variable "ssm_logs_s3_bucket" {
+  description = "Name of the S3 bucket configured in SSM Session Manager preferences for session logging (e.g. the central LZA logging bucket). Required when your account ships SSM session logs to S3. Leave empty if S3 logging is not configured."
+  type        = string
+  default     = ""
+}

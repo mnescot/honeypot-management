@@ -178,6 +178,42 @@ resource "aws_iam_role_policy" "tpot_ssm_kms" {
 }
 
 # ---------------------------------------------------------------------------
+# S3 — SSM Session Manager session logging
+#
+# When SSM Session Manager preferences ship session logs to an S3 bucket
+# (common in Landing Zone Accelerator accounts), the EC2 instance role must
+# be able to read the bucket's encryption configuration and write log objects.
+# Set var.ssm_logs_s3_bucket to the bucket name shown in the Session Manager
+# preferences console (or the AccessDenied error message).
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "tpot_ssm_s3_logs" {
+  count = var.ssm_logs_s3_bucket != "" ? 1 : 0
+
+  name = "tpot-ssm-s3-logs"
+  role = aws_iam_role.tpot.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SessionManagerS3Logging"
+        Effect = "Allow"
+        Action = [
+          "s3:GetEncryptionConfiguration",
+          "s3:PutObject",
+          "s3:PutObjectAcl",
+        ]
+        Resource = [
+          "arn:aws:s3:::${var.ssm_logs_s3_bucket}",
+          "arn:aws:s3:::${var.ssm_logs_s3_bucket}/*",
+        ]
+      }
+    ]
+  })
+}
+
+# ---------------------------------------------------------------------------
 # Instance profile
 # ---------------------------------------------------------------------------
 
