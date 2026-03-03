@@ -123,15 +123,3 @@ resource "aws_instance" "tpot" {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Elastic IP — stable public address for the honeypot
-# ---------------------------------------------------------------------------
-
-resource "aws_eip" "tpot" {
-  instance = aws_instance.tpot.id
-  domain   = "vpc"
-
-  tags = {
-    Name = "${var.project}-eip"
-  }
-}

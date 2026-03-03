@@ -306,9 +306,9 @@ IMDS_TOKEN=$(curl -fsSL \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
   "http://169.254.169.254/latest/api/token")
 
-PUBLIC_IP=$(curl -fsSL \
+PRIVATE_IP=$(curl -fsSL \
   -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
-  "http://169.254.169.254/latest/meta-data/public-ipv4" \
+  "http://169.254.169.254/latest/meta-data/local-ipv4" \
   || echo "127.0.0.1")
 
 openssl req -x509 -newkey rsa:4096 \
@@ -317,7 +317,7 @@ openssl req -x509 -newkey rsa:4096 \
   -days 825 \
   -nodes \
   -subj "/CN=${TPOT_FQDN}/O=T-Pot Honeypot/C=US" \
-  -addext "subjectAltName=DNS:${TPOT_FQDN},IP:${PUBLIC_IP}"
+  -addext "subjectAltName=DNS:${TPOT_FQDN},IP:${PRIVATE_IP}"
 
 chmod 640 "$OAUTH2_PROXY_CONF_DIR/tpot.key"
 log "Self-signed TLS certificate generated (CN=${TPOT_FQDN})"

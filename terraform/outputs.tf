@@ -5,11 +5,6 @@ output "tpot_instance_id" {
   value       = aws_instance.tpot.id
 }
 
-output "tpot_public_ip" {
-  description = "Elastic IP address of the T-Pot server (stable public IP)"
-  value       = aws_eip.tpot.public_ip
-}
-
 output "tpot_private_ip" {
   description = "Private IP address of the T-Pot server within the VPC"
   value       = aws_instance.tpot.private_ip
@@ -22,7 +17,7 @@ output "web_ui_url" {
 
 output "ssh_management" {
   description = "SSH command to connect to the T-Pot management interface (T-Pot remaps sshd to port 64295)"
-  value       = "ssh -p 64295 tsec@${aws_eip.tpot.public_ip}"
+  value       = "ssh -p 64295 tsec@${aws_instance.tpot.private_ip}"
 }
 
 output "tpot_iam_role_arn" {

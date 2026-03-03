@@ -211,13 +211,13 @@ apply:
     - echo "Applying Terraform plan..."
     - terraform -chdir=terraform apply -input=false plan.tfplan
     - |
-      TPOT_IP=$(terraform -chdir=terraform output -raw tpot_public_ip)
+      TPOT_IP=$(terraform -chdir=terraform output -raw tpot_private_ip)
       echo ""
       echo "========================================="
       echo "T-Pot deployment completed successfully!"
       echo "========================================="
       echo ""
-      echo "T-Pot Public IP   : ${TPOT_IP}"
+      echo "T-Pot Private IP  : ${TPOT_IP}"
       echo "Web UI (SAML SSO) : https://${TF_VAR_tpot_fqdn}"
       echo "Direct Web UI     : https://${TPOT_IP}:64297  (restricted by SG)"
       echo "SSH Management    : ssh -p 64295 tsec@${TPOT_IP}"
