@@ -39,7 +39,7 @@ SSM_PATH_OAUTH2_COOKIE_SECRET="${SSM_PATH_OAUTH2_COOKIE_SECRET:?SSM_PATH_OAUTH2_
 TPOT_REPO="https://github.com/telekom-security/tpotce"
 TPOT_INSTALL_DIR="/home/tsec/tpotce"
 
-OAUTH2_PROXY_VERSION="7.6.0"
+OAUTH2_PROXY_VERSION="7.14.3"
 OAUTH2_PROXY_BIN="/usr/local/bin/oauth2-proxy"
 OAUTH2_PROXY_CONF_DIR="/etc/oauth2-proxy"
 
@@ -100,7 +100,8 @@ apt-get install -y --no-install-recommends \
   iptables-persistent \
   ca-certificates \
   gnupg \
-  lsb-release
+  lsb-release \
+  ansible
 
 log "System prerequisites installed"
 
@@ -175,6 +176,13 @@ fi
 # ---------------------------------------------------------------------------
 # Phase 5: Clone and install T-Pot CE
 # ---------------------------------------------------------------------------
+# Grant tsec passwordless sudo — required by the T-Pot Ansible-based installer,
+# which calls sudo internally and cannot accept an interactive password prompt.
+# This is appropriate for a dedicated honeypot management account.
+echo "tsec ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/99-tsec-nopasswd
+chmod 440 /etc/sudoers.d/99-tsec-nopasswd
+log "Passwordless sudo granted to tsec for T-Pot installer"
+
 log "=== Phase 5: Clone T-Pot CE ==="
 
 if [ ! -d "$TPOT_INSTALL_DIR" ]; then
@@ -265,14 +273,16 @@ log "=== Phase 8: Install oauth2-proxy (SHA256-verified) ==="
 
 OAUTH2_ARCH="linux-amd64"
 OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}.tar.gz"
-OAUTH2_URL="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_PROXY_VERSION}/${OAUTH2_TARBALL}"
-OAUTH2_SHA256_URL="${OAUTH2_URL}.sha256"
+OAUTH2_BASE_URL="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_PROXY_VERSION}"
+OAUTH2_URL="${OAUTH2_BASE_URL}/${OAUTH2_TARBALL}"
+# v7.7+ ships a single sha256sum.txt covering all release artifacts
+OAUTH2_SHA256_URL="${OAUTH2_BASE_URL}/sha256sum.txt"
 
 curl -fsSL "$OAUTH2_URL"       -o /tmp/oauth2-proxy.tar.gz
-curl -fsSL "$OAUTH2_SHA256_URL" -o /tmp/oauth2-proxy.tar.gz.sha256
+curl -fsSL "$OAUTH2_SHA256_URL" -o /tmp/oauth2-proxy.sha256sum.txt
 
-# Verify — the .sha256 file may contain just the hash or "hash  filename"
-EXPECTED_HASH=$(awk '{print $1}' /tmp/oauth2-proxy.tar.gz.sha256)
+# Extract the hash for our specific tarball from the combined checksum file
+EXPECTED_HASH=$(grep "${OAUTH2_TARBALL}" /tmp/oauth2-proxy.sha256sum.txt | awk '{print $1}')
 ACTUAL_HASH=$(sha256sum /tmp/oauth2-proxy.tar.gz | awk '{print $1}')
 
 if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
@@ -286,7 +296,7 @@ log "oauth2-proxy SHA256 verified"
 tar -xzf /tmp/oauth2-proxy.tar.gz -C /tmp
 install -m 755 "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}/oauth2-proxy" \
   "$OAUTH2_PROXY_BIN"
-rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.tar.gz.sha256 \
+rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.sha256sum.txt \
        "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}"
 
 log "oauth2-proxy installed"
