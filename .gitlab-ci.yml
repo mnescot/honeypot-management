@@ -87,6 +87,42 @@ upload-scripts:
       aws s3 ls "s3://${S3_SCRIPTS_BUCKET}/${SETUP_SCRIPT_S3_KEY}.sha256" \
         --region "$TF_VAR_aws_region"
 
+    - |
+      # -----------------------------------------------------------------------
+      # Download oauth2-proxy from GitHub here in CI (runner has open internet
+      # access) and stage it in S3 so the EC2 instance can fetch it without
+      # needing direct access to github.com — common in LZA/restricted VPCs.
+      # The version is read from the setup script to keep them in sync.
+      # -----------------------------------------------------------------------
+      OAUTH2_VERSION=$(grep 'OAUTH2_PROXY_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      OAUTH2_ARCH="linux-amd64"
+      OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_VERSION}.${OAUTH2_ARCH}.tar.gz"
+      OAUTH2_BASE="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_VERSION}"
+
+      echo "Downloading oauth2-proxy v${OAUTH2_VERSION}..."
+      curl -fsSL "${OAUTH2_BASE}/${OAUTH2_TARBALL}" -o /tmp/oauth2-proxy.tar.gz
+      curl -fsSL "${OAUTH2_BASE}/${OAUTH2_TARBALL}-sha256sum.txt" -o /tmp/oauth2-proxy.sha256sum.txt
+
+      # Verify integrity before staging in S3
+      EXPECTED=$(grep "${OAUTH2_TARBALL}" /tmp/oauth2-proxy.sha256sum.txt | awk '{print $1}')
+      ACTUAL=$(sha256sum /tmp/oauth2-proxy.tar.gz | awk '{print $1}')
+      if [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "ERROR - oauth2-proxy SHA256 mismatch (expected: ${EXPECTED}, actual: ${ACTUAL})"
+        exit 1
+      fi
+      echo "oauth2-proxy SHA256 verified: ${ACTUAL}"
+
+      # Upload tarball and its sha256 to S3 under tpot/ prefix
+      aws s3 cp /tmp/oauth2-proxy.tar.gz \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/${OAUTH2_TARBALL}" \
+        --region "${TF_VAR_aws_region}" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},oauth2-proxy-version=${OAUTH2_VERSION}"
+      aws s3 cp /tmp/oauth2-proxy.sha256sum.txt \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/${OAUTH2_TARBALL}-sha256sum.txt" \
+        --region "${TF_VAR_aws_region}"
+
+      echo "oauth2-proxy uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/${OAUTH2_TARBALL}"
+
     - echo "All scripts and digests uploaded successfully"
   dependencies:
     - validate-scripts

@@ -101,6 +101,9 @@ export SSM_PATH_WEB_PASSWORD="${ssm_path_web_password}"
 export SSM_PATH_AZURE_CLIENT_SECRET="${ssm_path_azure_client_secret}"
 export SSM_PATH_OAUTH2_COOKIE_SECRET="${ssm_path_oauth2_cookie_secret}"
 
+# S3 bucket where CI stages setup scripts and supplementary binaries
+export SETUP_SCRIPT_S3_BUCKET="${setup_script_s3_bucket}"
+
 # ---------------------------------------------------------------------------
 # 5. Run the full T-Pot installation
 # ---------------------------------------------------------------------------

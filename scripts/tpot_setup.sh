@@ -36,6 +36,9 @@ SSM_PATH_WEB_PASSWORD="${SSM_PATH_WEB_PASSWORD:?SSM_PATH_WEB_PASSWORD is require
 SSM_PATH_AZURE_CLIENT_SECRET="${SSM_PATH_AZURE_CLIENT_SECRET:?SSM_PATH_AZURE_CLIENT_SECRET is required}"
 SSM_PATH_OAUTH2_COOKIE_SECRET="${SSM_PATH_OAUTH2_COOKIE_SECRET:?SSM_PATH_OAUTH2_COOKIE_SECRET is required}"
 
+# S3 bucket used to stage setup scripts and supplementary binaries (oauth2-proxy)
+SETUP_SCRIPT_S3_BUCKET="${SETUP_SCRIPT_S3_BUCKET:?SETUP_SCRIPT_S3_BUCKET is required}"
+
 TPOT_REPO="https://github.com/telekom-security/tpotce"
 TPOT_INSTALL_DIR="/home/tsec/tpotce"
 
@@ -273,15 +276,17 @@ log "=== Phase 8: Install oauth2-proxy (SHA256-verified) ==="
 
 OAUTH2_ARCH="linux-amd64"
 OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}.tar.gz"
-OAUTH2_BASE_URL="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_PROXY_VERSION}"
-OAUTH2_URL="${OAUTH2_BASE_URL}/${OAUTH2_TARBALL}"
-# v7.7+ ships a single sha256sum.txt covering all release artifacts
-OAUTH2_SHA256_URL="${OAUTH2_BASE_URL}/sha256sum.txt"
+OAUTH2_S3_KEY="tpot/${OAUTH2_TARBALL}"
+OAUTH2_SHA256_S3_KEY="tpot/${OAUTH2_TARBALL}-sha256sum.txt"
 
-curl -fsSL "$OAUTH2_URL"       -o /tmp/oauth2-proxy.tar.gz
-curl -fsSL "$OAUTH2_SHA256_URL" -o /tmp/oauth2-proxy.sha256sum.txt
+# Download from S3 — the tarball was staged there by the CI upload-scripts job.
+# This avoids a direct runtime dependency on github.com release CDN, which may
+# be blocked in Landing Zone Accelerator or other restricted VPC environments.
+aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${OAUTH2_S3_KEY}" \
+  /tmp/oauth2-proxy.tar.gz --region "$AWS_REGION"
+aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${OAUTH2_SHA256_S3_KEY}" \
+  /tmp/oauth2-proxy.sha256sum.txt --region "$AWS_REGION"
 
-# Extract the hash for our specific tarball from the combined checksum file
 EXPECTED_HASH=$(grep "${OAUTH2_TARBALL}" /tmp/oauth2-proxy.sha256sum.txt | awk '{print $1}')
 ACTUAL_HASH=$(sha256sum /tmp/oauth2-proxy.tar.gz | awk '{print $1}')
 
