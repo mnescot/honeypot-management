@@ -253,14 +253,18 @@ log "=== Phase 7: Write docker-compose.override.yml ==="
 cat > "$COMPOSE_DIR/docker-compose.override.yml" << 'OVERRIDE'
 # docker-compose.override.yml
 # Applied on top of T-Pot's main compose file.
-# Binds the nginx web UI ports to 127.0.0.1 so they are not directly
-# reachable from the internet; all external web UI access goes through
-# the oauth2-proxy service on port 443.
+# Binds the nginx web UI port (64297) to 127.0.0.1 so the T-Pot web UI is
+# not directly reachable from the network; all external access goes through
+# oauth2-proxy on port 443.
+#
+# Port 64295 is intentionally omitted: T-Pot's installer moves the HOST
+# sshd to 64295, so it is managed by the OS — not by Docker.  Adding a
+# container binding for 64295 here causes a "address already in use" error.
+# SSH access is restricted to var.tpot_admin_cidr by the AWS security group.
 services:
   nginx:
     ports:
       - "127.0.0.1:64297:64297"
-      - "127.0.0.1:64295:64295"
 OVERRIDE
 
 chown tsec:tsec "$COMPOSE_DIR/docker-compose.override.yml"
