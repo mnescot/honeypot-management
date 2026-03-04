@@ -150,7 +150,8 @@ prepare:
       REQUIRED_VARS="aws_region vpc_id subnet_ids instance_type key_name \
         tpot_admin_cidr tpot_web_user tpot_web_password tpot_hostname tpot_fqdn \
         azure_tenant_id azure_client_id azure_client_secret oauth2_cookie_secret \
-        setup_script_s3_bucket setup_script_s3_key"
+        setup_script_s3_bucket setup_script_s3_key \
+        alb_listener_arn alb_security_group_id"
 
       echo "Checking Terraform variable definitions..."
       for var in $REQUIRED_VARS; do

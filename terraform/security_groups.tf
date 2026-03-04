@@ -4,10 +4,10 @@
 # Design principles:
 #   - Honeypot ports are open to 0.0.0.0/0 (the whole point is to attract traffic)
 #   - Management ports are restricted to tpot_admin_cidr
-#   - The SAML-protected web UI (port 443, served by oauth2-proxy) is also
-#     restricted to tpot_admin_cidr — honeypot management access is not public
+#   - The web UI backend (port 4180, oauth2-proxy HTTP) accepts traffic only
+#     from the ALB security group — the ALB terminates HTTPS with its ACM cert
 #   - Port 64297 (T-Pot nginx direct) is NOT exposed externally; access is
-#     only via the oauth2-proxy on port 443
+#     only via oauth2-proxy on port 4180 → localhost:64297
 #   - All outbound traffic is permitted (T-Pot components need internet access
 #     for threat-intel feeds, Docker image pulls, etc.)
 
@@ -36,15 +36,18 @@ resource "aws_security_group_rule" "mgmt_ssh" {
   cidr_blocks       = var.tpot_admin_cidr
 }
 
-# SAML/OIDC-protected web UI via oauth2-proxy (port 443)
-resource "aws_security_group_rule" "mgmt_https" {
-  security_group_id = aws_security_group.tpot.id
-  type              = "ingress"
-  description       = "T-Pot web UI via oauth2-proxy SAML/OIDC (Microsoft Entra ID)"
-  from_port         = 443
-  to_port           = 443
-  protocol          = "tcp"
-  cidr_blocks       = var.tpot_admin_cidr
+# oauth2-proxy backend (HTTP:4180) — ALB security group only
+# The ALB terminates HTTPS with its ACM certificate and forwards plain HTTP
+# to this port. Direct access from clients on port 443 is no longer needed;
+# the ALB is the sole entry point for web UI traffic.
+resource "aws_security_group_rule" "alb_backend" {
+  security_group_id        = aws_security_group.tpot.id
+  type                     = "ingress"
+  description              = "oauth2-proxy backend — from ALB only (ALB terminates TLS)"
+  from_port                = 4180
+  to_port                  = 4180
+  protocol                 = "tcp"
+  source_security_group_id = var.alb_security_group_id
 }
 
 # ---------------------------------------------------------------------------

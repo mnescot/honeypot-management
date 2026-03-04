@@ -145,6 +145,26 @@ variable "project" {
   default     = "tpot-honeypot"
 }
 
+# ---------------------------------------------------------------------------
+# ALB integration
+# ---------------------------------------------------------------------------
+
+variable "alb_listener_arn" {
+  description = "ARN of the existing ALB HTTPS listener (port 443) to attach the T-Pot listener rule to. TLS is terminated at the ALB using its ACM certificate; oauth2-proxy on the EC2 instance receives plain HTTP on port 4180."
+  type        = string
+}
+
+variable "alb_security_group_id" {
+  description = "Security group ID of the existing ALB. The T-Pot EC2 security group will allow inbound HTTP on port 4180 only from this security group, ensuring traffic must pass through the ALB."
+  type        = string
+}
+
+variable "alb_listener_rule_priority" {
+  description = "Priority for the ALB listener rule that routes requests matching tpot_fqdn to the T-Pot target group. Must be unique within the listener (1-50000). Lower values are evaluated first."
+  type        = number
+  default     = 100
+}
+
 variable "ssm_kms_key_arn" {
   description = "ARN of the KMS key configured in SSM Session Manager preferences for session encryption. Required when your account enforces KMS-encrypted SSM sessions. Leave empty if sessions are unencrypted."
   type        = string

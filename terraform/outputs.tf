@@ -11,8 +11,13 @@ output "tpot_private_ip" {
 }
 
 output "web_ui_url" {
-  description = "T-Pot web UI URL via SAML/OIDC authentication (oauth2-proxy on port 443)"
+  description = "T-Pot web UI URL via SAML/OIDC authentication (ALB → oauth2-proxy → T-Pot nginx)"
   value       = "https://${var.tpot_fqdn}"
+}
+
+output "target_group_arn" {
+  description = "ARN of the ALB target group for the T-Pot instance"
+  value       = aws_lb_target_group.tpot.arn
 }
 
 output "ssh_management" {

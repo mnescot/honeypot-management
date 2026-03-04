@@ -311,35 +311,19 @@ rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.sha256sum.txt \
 log "oauth2-proxy installed"
 
 # ---------------------------------------------------------------------------
-# Phase 9: Generate self-signed TLS certificate for oauth2-proxy
-#    Uses IMDSv2 token flow for fetching the public IP.
-#    In production, replace with a certificate from your PKI or Let's Encrypt.
+# Phase 9: Prepare oauth2-proxy configuration directory
+#
+# TLS is now terminated at the ALB (ACM certificate).  oauth2-proxy listens
+# on plain HTTP port 4180; no self-signed certificate is required on the
+# instance.  The ALB security group restricts who can reach port 4180.
 # ---------------------------------------------------------------------------
-log "=== Phase 9: TLS certificate ==="
+log "=== Phase 9: Prepare oauth2-proxy configuration directory ==="
 
 mkdir -p "$OAUTH2_PROXY_CONF_DIR"
-
-# IMDSv2: obtain a short-lived token, then use it to query the public IP
-IMDS_TOKEN=$(curl -fsSL \
-  -X PUT \
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
-  "http://169.254.169.254/latest/api/token")
-
-PRIVATE_IP=$(curl -fsSL \
-  -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" \
-  "http://169.254.169.254/latest/meta-data/local-ipv4" \
-  || echo "127.0.0.1")
-
-openssl req -x509 -newkey rsa:4096 \
-  -keyout "$OAUTH2_PROXY_CONF_DIR/tpot.key" \
-  -out    "$OAUTH2_PROXY_CONF_DIR/tpot.crt" \
-  -days 825 \
-  -nodes \
-  -subj "/CN=${TPOT_FQDN}/O=T-Pot Honeypot/C=US" \
-  -addext "subjectAltName=DNS:${TPOT_FQDN},IP:${PRIVATE_IP}"
-
-chmod 640 "$OAUTH2_PROXY_CONF_DIR/tpot.key"
-log "Self-signed TLS certificate generated (CN=${TPOT_FQDN})"
+# Config will be written as root:tsec 640 so the service user can read it
+chown root:tsec "$OAUTH2_PROXY_CONF_DIR"
+chmod 750 "$OAUTH2_PROXY_CONF_DIR"
+log "Configuration directory ready: $OAUTH2_PROXY_CONF_DIR"
 
 # ---------------------------------------------------------------------------
 # Phase 10: Write oauth2-proxy configuration file
@@ -368,10 +352,13 @@ cookie_secure = true
 upstreams = ["https://127.0.0.1:64297"]
 ssl_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
 
-# Listen on all interfaces on HTTPS port 443
-https_address = "0.0.0.0:443"
-tls_cert_file = "${OAUTH2_PROXY_CONF_DIR}/tpot.crt"
-tls_key_file  = "${OAUTH2_PROXY_CONF_DIR}/tpot.key"
+# Listen on plain HTTP — TLS is terminated at the ALB (ACM certificate).
+# The ALB security group ensures only the ALB can reach this port.
+http_address = "0.0.0.0:4180"
+
+# Trust X-Forwarded-Proto and X-Forwarded-For headers from the ALB so that
+# oauth2-proxy knows the original request was HTTPS and sets cookies correctly.
+reverse_proxy = true
 
 redirect_url = "https://${TPOT_FQDN}/oauth2/callback"
 
@@ -390,6 +377,7 @@ set_authorization_header = true
 cookie_name = "_tpot_auth"
 EOF
 
+chown root:tsec "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg"
 chmod 640 "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg"
 log "oauth2-proxy configuration written"
 
@@ -407,7 +395,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+# Runs as tsec (non-root) — port 4180 does not require elevated privileges.
+# TLS is terminated at the ALB; no certificate binding needed here.
+User=tsec
+Group=tsec
 ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/oauth2-proxy/oauth2-proxy.cfg
 Restart=always
 RestartSec=5
@@ -419,7 +410,7 @@ SyslogIdentifier=oauth2-proxy
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/etc/oauth2-proxy /var/log
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
