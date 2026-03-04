@@ -5,16 +5,35 @@
 # This script is uploaded to S3 by the CI pipeline and downloaded/executed
 # by user_data.sh at instance launch.
 #
-# What this script does:
-#   0. Fetch secrets from AWS SSM Parameter Store (no plaintext in user_data)
-#   1. Install system prerequisites via apt with GPG-verified packages
-#   2. Install Docker via the official apt repository (GPG-verified; no curl|sh)
-#   3. Clone T-Pot CE and install it in HIVE (standalone) mode
-#   4. Restrict T-Pot nginx to localhost via docker-compose.override.yml
-#   5. Install oauth2-proxy (SHA256-verified) for SAML-compatible SSO via
-#      Microsoft Entra ID OIDC, listening on port 443
-#   6. Configure sysctl / kernel parameters recommended by T-Pot
-#   7. Enable and start all services
+# Architecture (two-phase, reboot-safe):
+#
+#   PHASE A — runs inline during cloud-init (this script, Phases 0-5):
+#     0. Fetch secrets from SSM Parameter Store
+#     1. System prerequisites (apt, ansible, Docker)
+#     2. Kernel / sysctl tuning
+#     3. Docker via official apt/GPG
+#     4. Create tsec user
+#     4b. Write /opt/tpot_post_install.sh and register tpot-post-install.service
+#     5. Clone T-Pot CE and run installer (may trigger a system reboot)
+#     5c. Trigger tpot-post-install.service immediately (no-reboot case)
+#
+#   PHASE B — runs via tpot-post-install.service (Phases 6-14):
+#     6. Locate T-Pot compose directory
+#     7. Write docker-compose.override.yml (nginx → 127.0.0.1 only)
+#     8. Install oauth2-proxy from S3 (SHA256-verified)
+#     9-10. Configure oauth2-proxy (plain HTTP:4180, ALB terminates TLS)
+#     11. oauth2-proxy systemd unit
+#     12. iptables block on port 64297 from non-loopback
+#     13. Create systemd drop-in for T-Pot service to enforce compose override;
+#         restart T-Pot and start oauth2-proxy
+#     14. Summary log; disable tpot-post-install.service
+#
+#   WHY TWO PHASES?
+#     cloud-init executes user_data exactly once on the first boot and never
+#     resumes after a reboot.  The T-Pot Ansible installer may trigger a
+#     reboot.  By registering Phase B as an enabled systemd one-shot service
+#     before the installer runs, Phase B executes correctly whether or not a
+#     reboot occurs.
 
 set -euo pipefail
 
@@ -50,10 +69,6 @@ log() { echo "[$(date -u +%FT%TZ)] $*"; }
 
 # ---------------------------------------------------------------------------
 # Phase 0: Fetch secrets from SSM Parameter Store
-#
-# Secrets are fetched here — at runtime on the EC2 instance — using the
-# instance IAM role.  They are never stored in user_data, cloud-init
-# artifacts, or Terraform-rendered templates.
 # ---------------------------------------------------------------------------
 log "=== Phase 0: Fetch secrets from SSM ==="
 
@@ -72,7 +87,6 @@ OAUTH2_COOKIE_SECRET=$(ssm_get "$SSM_PATH_OAUTH2_COOKIE_SECRET")
 
 log "Secrets fetched from SSM"
 
-# Validate that we got non-empty values
 for secret_name in TPOT_WEB_PASSWORD AZURE_CLIENT_SECRET OAUTH2_COOKIE_SECRET; do
   eval "secret_val=\$$secret_name"
   if [ -z "$secret_val" ]; then
@@ -128,21 +142,15 @@ log "Kernel parameters applied"
 
 # ---------------------------------------------------------------------------
 # Phase 3: Docker installation via official apt repository (GPG-verified)
-#
-# The curl|sh pattern is NOT used here.  Instead, Docker's signing key is
-# fetched and verified, then packages are installed through apt — the same
-# channel that verifies package signatures automatically.
 # ---------------------------------------------------------------------------
 log "=== Phase 3: Docker (apt / GPG-verified) ==="
 
 install -m 0755 -d /etc/apt/keyrings
 
-# Download Docker's official GPG key and dearmor it into the keyring
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
 
-# Add the stable Docker repository signed by the key above
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu \
@@ -164,7 +172,7 @@ log "Docker $(docker --version)"
 log "Docker Compose $(docker compose version)"
 
 # ---------------------------------------------------------------------------
-# Phase 4: Create T-Pot user (tsec) — mirrors the T-Pot installer's convention
+# Phase 4: Create T-Pot user (tsec)
 # ---------------------------------------------------------------------------
 log "=== Phase 4: Create tsec user ==="
 
@@ -177,46 +185,106 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 5: Clone and install T-Pot CE
+# Phase 4b: Write post-install env file and register one-shot service
+#
+# The T-Pot installer (Phase 5) may trigger a system reboot.  cloud-init
+# does NOT resume after a reboot, so any work that must run after the
+# installer (compose override, oauth2-proxy, iptables) is extracted into
+# /opt/tpot_post_install.sh and registered as an enabled systemd one-shot
+# service BEFORE the installer runs.
+#
+# - If the installer reboots: the service runs automatically on the next boot.
+# - If no reboot: Phase 5c starts the service immediately after the installer.
+#
+# Non-sensitive config is written to /etc/tpot-post-install.env so the
+# service has the values it needs on a subsequent boot.  Secrets are never
+# persisted — they are re-fetched from SSM at the start of Phase B.
 # ---------------------------------------------------------------------------
-# Grant tsec passwordless sudo — required by the T-Pot Ansible-based installer,
-# which calls sudo internally and cannot accept an interactive password prompt.
-# This is appropriate for a dedicated honeypot management account.
-echo "tsec ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/99-tsec-nopasswd
-chmod 440 /etc/sudoers.d/99-tsec-nopasswd
-log "Passwordless sudo granted to tsec for T-Pot installer"
+log "=== Phase 4b: Register post-install one-shot service ==="
 
-log "=== Phase 5: Clone T-Pot CE ==="
+# Write non-sensitive env vars to disk (NO secret values)
+cat > /etc/tpot-post-install.env << ENVFILE
+AWS_REGION=${AWS_REGION}
+TPOT_HOSTNAME=${TPOT_HOSTNAME}
+TPOT_WEB_USER=${TPOT_WEB_USER}
+TPOT_FQDN=${TPOT_FQDN}
+AZURE_TENANT_ID=${AZURE_TENANT_ID}
+AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+SSM_PATH_WEB_PASSWORD=${SSM_PATH_WEB_PASSWORD}
+SSM_PATH_AZURE_CLIENT_SECRET=${SSM_PATH_AZURE_CLIENT_SECRET}
+SSM_PATH_OAUTH2_COOKIE_SECRET=${SSM_PATH_OAUTH2_COOKIE_SECRET}
+SETUP_SCRIPT_S3_BUCKET=${SETUP_SCRIPT_S3_BUCKET}
+TPOT_INSTALL_DIR=${TPOT_INSTALL_DIR}
+OAUTH2_PROXY_VERSION=${OAUTH2_PROXY_VERSION}
+OAUTH2_PROXY_BIN=${OAUTH2_PROXY_BIN}
+OAUTH2_PROXY_CONF_DIR=${OAUTH2_PROXY_CONF_DIR}
+ENVFILE
+chmod 600 /etc/tpot-post-install.env
+log "Post-install env file written to /etc/tpot-post-install.env"
 
-if [ ! -d "$TPOT_INSTALL_DIR" ]; then
-  git clone --depth 1 "$TPOT_REPO" "$TPOT_INSTALL_DIR"
-  chown -R tsec:tsec "$TPOT_INSTALL_DIR"
-else
-  log "T-Pot directory already exists at $TPOT_INSTALL_DIR; skipping clone"
-fi
+# ---------------------------------------------------------------------------
+# Write the Phase B script.
+# Single-quoted heredoc (POSTINSTALL): nothing is expanded now — all
+# ${VARIABLE} references expand when the post-install script runs.
+# Inner heredocs (EOF, DROPIN, OVERRIDE, UNIT) are literal text here;
+# they execute with their normal semantics when the script runs.
+# ---------------------------------------------------------------------------
+cat > /opt/tpot_post_install.sh << 'POSTINSTALL'
+#!/usr/bin/env bash
+# /opt/tpot_post_install.sh
+# Phase B of T-Pot setup — run by tpot-post-install.service.
+# Applies the compose override, installs oauth2-proxy, configures iptables,
+# creates a systemd drop-in so the override persists across reboots, then
+# starts all services.
 
-log "=== Phase 5b: Run T-Pot installer (HIVE/standalone mode) ==="
+set -euo pipefail
 
-# The T-Pot installer accepts:
-#   -s  suppress confirmations (non-interactive)
-#   -t  installation type  (h = HIVE = full standalone with WebUI)
-#   -u  web UI username
-#   -p  web UI password
-cd "$TPOT_INSTALL_DIR"
+LOG="/var/log/tpot-setup.log"
+exec >> "$LOG" 2>&1
 
-sudo -u tsec bash -c "
-  cd '$TPOT_INSTALL_DIR'
-  ./install.sh -s -t h -u '$TPOT_WEB_USER' -p '$TPOT_WEB_PASSWORD'
-" || {
-  log "WARNING: T-Pot installer exited non-zero. Checking if services are running..."
-  if [ ! -f "$TPOT_INSTALL_DIR/.env" ]; then
-    log "ERROR: T-Pot install appears to have failed (.env not found)"
-    exit 1
-  fi
-  log "T-Pot .env found — treating as successful install"
+log() { echo "[$(date -u +%FT%TZ)] [post-install] $*"; }
+
+log "============================================================"
+log "Phase B (post-install) starting"
+log "============================================================"
+
+# Source non-sensitive config written by Phase A
+# shellcheck disable=SC1091
+source /etc/tpot-post-install.env
+
+# Re-fetch secrets from SSM — secrets are never persisted to disk.
+# Retry loop handles the case where the SSM endpoint is briefly unreachable
+# immediately after a system reboot.
+ssm_get() {
+  aws ssm get-parameter \
+    --name "$1" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text \
+    --region "$AWS_REGION"
 }
 
-log "T-Pot CE installed"
+log "Fetching secrets from SSM..."
+for attempt in $(seq 1 10); do
+  if TPOT_WEB_PASSWORD=$(ssm_get "$SSM_PATH_WEB_PASSWORD") \
+     && AZURE_CLIENT_SECRET=$(ssm_get "$SSM_PATH_AZURE_CLIENT_SECRET") \
+     && OAUTH2_COOKIE_SECRET=$(ssm_get "$SSM_PATH_OAUTH2_COOKIE_SECRET"); then
+    break
+  fi
+  log "SSM not ready (attempt ${attempt}/10) — retrying in 15s..."
+  sleep 15
+  [ "$attempt" -eq 10 ] && { log "ERROR: Could not fetch secrets after 10 attempts"; exit 1; }
+done
+log "Secrets fetched from SSM"
+
+# Wait for Docker to be ready (critical in the reboot case)
+log "Waiting for Docker to be ready..."
+for i in $(seq 1 30); do
+  docker info &>/dev/null && break
+  [ "$i" -eq 30 ] && { log "ERROR: Docker not ready after 60s"; exit 1; }
+  sleep 2
+done
+log "Docker is ready"
 
 # ---------------------------------------------------------------------------
 # Phase 6: Identify the compose directory used by T-Pot
@@ -225,56 +293,71 @@ log "=== Phase 6: Locate compose files ==="
 
 COMPOSE_DIR=""
 for candidate in \
-  "$TPOT_INSTALL_DIR" \
-  "$TPOT_INSTALL_DIR/docker" \
-  "$TPOT_INSTALL_DIR/compose"
+  "${TPOT_INSTALL_DIR}" \
+  "${TPOT_INSTALL_DIR}/docker" \
+  "${TPOT_INSTALL_DIR}/compose"
 do
-  if ls "$candidate"/docker-compose*.yml &>/dev/null 2>&1 \
-     || ls "$candidate"/compose*.yml &>/dev/null 2>&1; then
+  found=false
+  for _f in "${candidate}"/docker-compose*.yml "${candidate}"/compose*.yml; do
+    [ -f "$_f" ] && { found=true; break; }
+  done
+  if $found; then
     COMPOSE_DIR="$candidate"
     break
   fi
 done
 
 if [ -z "$COMPOSE_DIR" ]; then
-  log "ERROR: Could not locate T-Pot compose files under $TPOT_INSTALL_DIR"
+  log "ERROR: Could not locate T-Pot compose files under ${TPOT_INSTALL_DIR}"
   exit 1
 fi
+log "Compose directory: ${COMPOSE_DIR}"
 
-log "Compose directory: $COMPOSE_DIR"
+# Locate the primary compose file (docker-compose.yml preferred, then compose*.yml)
+COMPOSE_FILE=""
+for _candidate in \
+  "${COMPOSE_DIR}/docker-compose.yml" \
+  "${COMPOSE_DIR}"/compose*.yml
+do
+  [ -f "$_candidate" ] && { COMPOSE_FILE="$_candidate"; break; }
+done
+
+if [ -z "$COMPOSE_FILE" ]; then
+  log "ERROR: Primary compose file not found in ${COMPOSE_DIR}"
+  exit 1
+fi
+log "Primary compose file: ${COMPOSE_FILE}"
 
 # ---------------------------------------------------------------------------
 # Phase 7: docker-compose.override.yml
-#    Restrict T-Pot nginx to localhost only so that external traffic MUST
-#    pass through oauth2-proxy on port 443.
+#    Restrict T-Pot nginx to localhost so external traffic MUST pass through
+#    oauth2-proxy on port 4180 (behind the ALB).
 # ---------------------------------------------------------------------------
 log "=== Phase 7: Write docker-compose.override.yml ==="
 
-cat > "$COMPOSE_DIR/docker-compose.override.yml" << 'OVERRIDE'
+cat > "${COMPOSE_DIR}/docker-compose.override.yml" << 'OVERRIDE'
 # docker-compose.override.yml
 # Applied on top of T-Pot's main compose file.
 # Binds the nginx web UI port (64297) to 127.0.0.1 so the T-Pot web UI is
 # not directly reachable from the network; all external access goes through
-# oauth2-proxy on port 443.
+# oauth2-proxy on port 4180 (ALB terminates TLS).
 #
 # Port 64295 is intentionally omitted: T-Pot's installer moves the HOST
 # sshd to 64295, so it is managed by the OS — not by Docker.  Adding a
-# container binding for 64295 here causes a "address already in use" error.
-# SSH access is restricted to var.tpot_admin_cidr by the AWS security group.
+# container binding for 64295 here causes an "address already in use" error.
 services:
   nginx:
     ports:
       - "127.0.0.1:64297:64297"
 OVERRIDE
 
-chown tsec:tsec "$COMPOSE_DIR/docker-compose.override.yml"
-log "docker-compose.override.yml written"
+chown tsec:tsec "${COMPOSE_DIR}/docker-compose.override.yml"
+log "docker-compose.override.yml written to ${COMPOSE_DIR}"
 
 # ---------------------------------------------------------------------------
 # Phase 8: Install oauth2-proxy with SHA256 verification
-#
-# The tarball and its SHA256 digest are both downloaded from the official
-# GitHub release.  The digest is verified before extraction.
+#    Downloaded from S3 (staged by CI pipeline) to avoid a direct runtime
+#    dependency on github.com, which may be blocked in LZA environments.
 # ---------------------------------------------------------------------------
 log "=== Phase 8: Install oauth2-proxy (SHA256-verified) ==="
 
@@ -283,9 +366,6 @@ OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}.tar.gz"
 OAUTH2_S3_KEY="tpot/${OAUTH2_TARBALL}"
 OAUTH2_SHA256_S3_KEY="tpot/${OAUTH2_TARBALL}-sha256sum.txt"
 
-# Download from S3 — the tarball was staged there by the CI upload-scripts job.
-# This avoids a direct runtime dependency on github.com release CDN, which may
-# be blocked in Landing Zone Accelerator or other restricted VPC environments.
 aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${OAUTH2_S3_KEY}" \
   /tmp/oauth2-proxy.tar.gz --region "$AWS_REGION"
 aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${OAUTH2_SHA256_S3_KEY}" \
@@ -296,47 +376,44 @@ ACTUAL_HASH=$(sha256sum /tmp/oauth2-proxy.tar.gz | awk '{print $1}')
 
 if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
   log "ERROR: SHA256 mismatch for oauth2-proxy tarball — aborting"
-  log "  expected: $EXPECTED_HASH"
-  log "  actual:   $ACTUAL_HASH"
+  log "  expected: ${EXPECTED_HASH}"
+  log "  actual:   ${ACTUAL_HASH}"
   exit 1
 fi
 log "oauth2-proxy SHA256 verified"
 
 tar -xzf /tmp/oauth2-proxy.tar.gz -C /tmp
 install -m 755 "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}/oauth2-proxy" \
-  "$OAUTH2_PROXY_BIN"
+  "${OAUTH2_PROXY_BIN}"
 rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.sha256sum.txt \
        "/tmp/oauth2-proxy-v${OAUTH2_PROXY_VERSION}.${OAUTH2_ARCH}"
 
-log "oauth2-proxy installed"
+log "oauth2-proxy ${OAUTH2_PROXY_VERSION} installed to ${OAUTH2_PROXY_BIN}"
 
 # ---------------------------------------------------------------------------
 # Phase 9: Prepare oauth2-proxy configuration directory
-#
-# TLS is now terminated at the ALB (ACM certificate).  oauth2-proxy listens
-# on plain HTTP port 4180; no self-signed certificate is required on the
-# instance.  The ALB security group restricts who can reach port 4180.
+#    TLS is terminated at the ALB (ACM certificate).  oauth2-proxy listens
+#    on plain HTTP port 4180; no self-signed certificate is required.
 # ---------------------------------------------------------------------------
 log "=== Phase 9: Prepare oauth2-proxy configuration directory ==="
 
-mkdir -p "$OAUTH2_PROXY_CONF_DIR"
-# Config will be written as root:tsec 640 so the service user can read it
-chown root:tsec "$OAUTH2_PROXY_CONF_DIR"
-chmod 750 "$OAUTH2_PROXY_CONF_DIR"
-log "Configuration directory ready: $OAUTH2_PROXY_CONF_DIR"
+mkdir -p "${OAUTH2_PROXY_CONF_DIR}"
+chown root:tsec "${OAUTH2_PROXY_CONF_DIR}"
+chmod 750 "${OAUTH2_PROXY_CONF_DIR}"
+log "Configuration directory ready: ${OAUTH2_PROXY_CONF_DIR}"
 
 # ---------------------------------------------------------------------------
 # Phase 10: Write oauth2-proxy configuration file
 # ---------------------------------------------------------------------------
 log "=== Phase 10: oauth2-proxy configuration ==="
 
-cat > "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg" << EOF
+cat > "${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg" << EOF
 # oauth2-proxy configuration for T-Pot + Microsoft Entra ID OIDC
 #
 # Microsoft Entra ID App Registration requirements:
 #   - Platform: Web
 #   - Redirect URI: https://${TPOT_FQDN}/oauth2/callback
-#   - Supported account types: Accounts in this organizational directory
+#   - Supported account types: Accounts in this organisational directory
 #   - API permissions: openid, profile, email (all delegated)
 
 provider = "oidc"
@@ -377,8 +454,8 @@ set_authorization_header = true
 cookie_name = "_tpot_auth"
 EOF
 
-chown root:tsec "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg"
-chmod 640 "$OAUTH2_PROXY_CONF_DIR/oauth2-proxy.cfg"
+chown root:tsec "${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"
+chmod 640 "${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"
 log "oauth2-proxy configuration written"
 
 # ---------------------------------------------------------------------------
@@ -432,17 +509,20 @@ netfilter-persistent save || iptables-save > /etc/iptables/rules.v4
 log "iptables rules saved"
 
 # ---------------------------------------------------------------------------
-# Phase 13: Restart T-Pot with compose override, then start oauth2-proxy
+# Phase 13: Apply compose override and start services
 #
-# The T-Pot Ansible installer starts all containers during installation
-# (Phase 5), before the compose override is written (Phase 7).  A plain
-# systemctl restart may race: Docker tries to re-bind 127.0.0.1:64297 for
-# the new nginx container while the old one still holds the port.
+# FIX for Issue 1 (reboot safety): This entire block now runs inside the
+# tpot-post-install.service, which executes correctly whether the T-Pot
+# installer caused a reboot or not.
 #
-# Fix: explicitly docker compose down (removes containers, releases all
-# port bindings) then let T-Pot start fresh so the override is applied.
+# FIX for Issue 2 (override not applied): T-Pot's tpot.service may use an
+# explicit -f flag (e.g. docker compose -f /path/docker-compose.yml up),
+# which prevents Docker Compose from auto-reading docker-compose.override.yml.
+# We create a systemd drop-in that replaces ExecStart with a command that
+# explicitly includes both compose files.  This persists across all future
+# reboots.
 # ---------------------------------------------------------------------------
-log "=== Phase 13: Start services ==="
+log "=== Phase 13: Apply compose override and start services ==="
 
 # Identify the T-Pot systemd unit (name varies by installer version)
 TPOT_SVC=""
@@ -453,36 +533,48 @@ for svc in tpot tpotce; do
   fi
 done
 
-# Locate the primary compose file
-COMPOSE_FILE=$(ls "$COMPOSE_DIR/docker-compose.yml" \
-                  "$COMPOSE_DIR"/compose*.yml 2>/dev/null | head -1 || true)
+# Stop the T-Pot service (if found) before compose down to avoid races
+if [ -n "$TPOT_SVC" ]; then
+  systemctl stop "$TPOT_SVC" 2>/dev/null || true
+  log "T-Pot service (${TPOT_SVC}) stopped"
+fi
 
-if [ -n "$COMPOSE_FILE" ]; then
-  # Stop the systemd unit first so it does not race with our compose down
-  if [ -n "$TPOT_SVC" ]; then
-    systemctl stop "$TPOT_SVC" 2>/dev/null || true
-    log "T-Pot service ($TPOT_SVC) stopped"
-  fi
+# Remove all containers so every port binding is fully released
+docker compose -f "${COMPOSE_FILE}" down --timeout 30 2>/dev/null || true
+log "T-Pot containers removed; ports released"
+sleep 3
 
-  # Remove all containers so every port binding is fully released before
-  # Docker re-creates nginx with 127.0.0.1:64297 from the override file.
-  docker compose -f "$COMPOSE_FILE" down --timeout 30 2>/dev/null || true
-  log "T-Pot containers removed; ports released"
-  sleep 3
+if [ -n "$TPOT_SVC" ]; then
+  # Create a systemd drop-in that explicitly includes the compose override in
+  # ExecStart.  This guarantees the override is applied on every future boot,
+  # regardless of whether the original service uses an explicit -f flag.
+  DROPIN_DIR="/etc/systemd/system/${TPOT_SVC}.service.d"
+  mkdir -p "${DROPIN_DIR}"
 
-  if [ -n "$TPOT_SVC" ]; then
-    # docker-compose.override.yml in the same directory is picked up
-    # automatically by Docker Compose when the service starts.
-    systemctl start "$TPOT_SVC"
-    log "T-Pot service ($TPOT_SVC) started with compose override"
-  else
-    docker compose -f "$COMPOSE_FILE" \
-      -f "$COMPOSE_DIR/docker-compose.override.yml" \
-      up -d
-    log "T-Pot compose stack started"
-  fi
+  cat > "${DROPIN_DIR}/90-compose-override.conf" << DROPIN
+[Service]
+# Clear the original ExecStart and replace with one that explicitly
+# includes the compose override so nginx is bound to 127.0.0.1 only.
+ExecStart=
+ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_DIR}/docker-compose.override.yml up
+ExecStop=
+ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_DIR}/docker-compose.override.yml down --timeout 30
+DROPIN
+
+  systemctl daemon-reload
+  log "Systemd drop-in created: ${DROPIN_DIR}/90-compose-override.conf"
+  log "T-Pot service will always start with compose override on future boots"
+
+  systemctl start "${TPOT_SVC}"
+  log "T-Pot service (${TPOT_SVC}) started with compose override"
 else
-  log "WARNING: Could not find T-Pot compose file — skipping container restart"
+  # No systemd service found — start compose stack directly with both files
+  log "No T-Pot systemd service found; starting compose stack directly"
+  docker compose \
+    -f "${COMPOSE_FILE}" \
+    -f "${COMPOSE_DIR}/docker-compose.override.yml" \
+    up -d
+  log "T-Pot compose stack started"
 fi
 
 systemctl enable oauth2-proxy
@@ -490,7 +582,7 @@ systemctl start oauth2-proxy
 log "oauth2-proxy started"
 
 # ---------------------------------------------------------------------------
-# Phase 14: Summary
+# Phase 14: Summary and self-disable
 # ---------------------------------------------------------------------------
 log "==================================================================="
 log "T-Pot installation complete!"
@@ -504,7 +596,127 @@ log "    Tenant:     ${AZURE_TENANT_ID}"
 log "    Client ID:  ${AZURE_CLIENT_ID}"
 log "    Redirect:   https://${TPOT_FQDN}/oauth2/callback"
 log ""
-log "  TLS cert:   ${OAUTH2_PROXY_CONF_DIR}/tpot.crt  (self-signed)"
+log "  TLS:        Terminated at the ALB (ACM certificate); oauth2-proxy uses HTTP:4180"
 log "  oauth2-proxy config: ${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"
 log "  T-Pot dir:  ${TPOT_INSTALL_DIR}"
 log "==================================================================="
+
+# Remove passwordless sudo for tsec now that installation is complete.
+# It was required by the T-Pot Ansible installer; keeping it permanently
+# would allow any process running as tsec to escalate to root without a password.
+rm -f /etc/sudoers.d/99-tsec-nopasswd
+log "Passwordless sudo for tsec removed"
+
+# Disable this one-shot service so it does not re-run on subsequent reboots
+systemctl disable tpot-post-install.service 2>/dev/null || true
+log "tpot-post-install.service disabled (one-shot complete)"
+POSTINSTALL
+
+chmod +x /opt/tpot_post_install.sh
+log "Post-install script written to /opt/tpot_post_install.sh"
+
+# Register the post-install service — enabled BEFORE the T-Pot installer runs
+cat > /etc/systemd/system/tpot-post-install.service << 'SERVICE'
+[Unit]
+Description=T-Pot post-install configuration (one-shot)
+Documentation=file:///opt/tpot_post_install.sh
+# Run after Docker and networking are available.
+# If tpot.service or tpotce.service exists, run after it so that the
+# installer-started containers are up before we tear them down and restart
+# with the compose override.
+After=docker.service network-online.target tpot.service tpotce.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tpot_post_install.sh
+# Do not restart on failure — investigate /var/log/tpot-setup.log instead
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tpot-post-install
+# Allow up to 30 minutes for the full post-install to complete
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+systemctl daemon-reload
+systemctl enable tpot-post-install.service
+log "tpot-post-install.service enabled (will run on next boot if reboot is triggered)"
+
+# ---------------------------------------------------------------------------
+# Phase 5: Clone and install T-Pot CE
+# ---------------------------------------------------------------------------
+# Grant tsec passwordless sudo — required by the T-Pot Ansible-based installer,
+# which calls sudo internally and cannot accept an interactive password prompt.
+echo "tsec ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/99-tsec-nopasswd
+chmod 440 /etc/sudoers.d/99-tsec-nopasswd
+log "Passwordless sudo granted to tsec for T-Pot installer"
+
+log "=== Phase 5: Clone T-Pot CE ==="
+
+# Issue 3 mitigation: verify GitHub is reachable before attempting clone.
+# In Landing Zone Accelerator (LZA) VPCs, github.com may be blocked at the
+# egress firewall.  A clear error here is better than a silent git hang.
+if ! curl -fsS --max-time 15 -o /dev/null https://github.com; then
+  log "ERROR: Cannot reach github.com — T-Pot repo clone will fail."
+  log "  Check VPC egress rules, NAT gateway routing, and LZA firewall policy."
+  log "  github.com (140.82.112.0/20, 185.199.108.0/22) must be reachable on TCP/443."
+  exit 1
+fi
+log "GitHub is reachable"
+
+if [ ! -d "$TPOT_INSTALL_DIR" ]; then
+  git clone --depth 1 "$TPOT_REPO" "$TPOT_INSTALL_DIR"
+  chown -R tsec:tsec "$TPOT_INSTALL_DIR"
+else
+  log "T-Pot directory already exists at $TPOT_INSTALL_DIR; skipping clone"
+fi
+
+log "=== Phase 5b: Run T-Pot installer (HIVE/standalone mode) ==="
+
+# The T-Pot installer accepts:
+#   -s  suppress confirmations (non-interactive)
+#   -t  installation type  (h = HIVE = full standalone with WebUI)
+#   -u  web UI username
+#   -p  web UI password
+cd "$TPOT_INSTALL_DIR"
+
+sudo -u tsec bash -c "
+  cd '$TPOT_INSTALL_DIR'
+  ./install.sh -s -t h -u '$TPOT_WEB_USER' -p '$TPOT_WEB_PASSWORD'
+" || {
+  log "WARNING: T-Pot installer exited non-zero. Checking if services are running..."
+  if [ ! -f "$TPOT_INSTALL_DIR/.env" ]; then
+    log "ERROR: T-Pot install appears to have failed (.env not found)"
+    exit 1
+  fi
+  log "T-Pot .env found — treating as successful install"
+}
+
+log "T-Pot CE installed"
+
+# ---------------------------------------------------------------------------
+# Phase 5c: Trigger post-install service (no-reboot case)
+#
+# If the T-Pot installer did NOT reboot the instance, start the post-install
+# service immediately so Phase B runs in the same boot session.
+#
+# If the installer DID schedule a reboot, this start may fail or the instance
+# may reboot before it completes — both are harmless because the service is
+# already enabled and will run automatically after the reboot.
+# ---------------------------------------------------------------------------
+log "=== Phase 5c: Trigger post-install service ==="
+
+systemctl start tpot-post-install.service \
+  && log "tpot-post-install.service started successfully (no reboot detected)" \
+  || log "Note: Could not start tpot-post-install.service immediately — will run automatically after reboot if one was scheduled"
+
+log "======================================================"
+log "tpot_setup.sh (Phase A) complete."
+log "Phase B handled by tpot-post-install.service."
+log "Monitor progress: journalctl -u tpot-post-install -f"
+log "Full log: /var/log/tpot-setup.log"
+log "======================================================"
