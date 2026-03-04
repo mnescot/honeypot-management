@@ -498,15 +498,42 @@ log "oauth2-proxy systemd unit written"
 
 # ---------------------------------------------------------------------------
 # Phase 12: iptables rules — belt-and-suspenders port restriction
+#
+# IMPORTANT: We do NOT use `netfilter-persistent save` here.
+# T-Pot's Ansible installer adds its own iptables rules during Phase 5b
+# (including rules that may restrict outbound traffic).  Calling
+# `netfilter-persistent save` would capture ALL of those rules and persist
+# them permanently, which can block the SSM agent's outbound HTTPS after
+# every reboot.  T-Pot manages its own iptables persistence separately.
+#
+# Instead we apply our single rule immediately and register a dedicated
+# systemd one-shot service that re-applies ONLY this rule on each boot,
+# after Docker and T-Pot have had a chance to set up their own chains.
 # ---------------------------------------------------------------------------
 log "=== Phase 12: iptables ==="
 
-# Drop inbound connections to 64297 from non-loopback addresses
+# Apply immediately for this session
 iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
+log "iptables rule applied (current session)"
 
-# Persist rules across reboots
-netfilter-persistent save || iptables-save > /etc/iptables/rules.v4
-log "iptables rules saved"
+# Persist only this rule across reboots via a dedicated service
+cat > /etc/systemd/system/tpot-iptables.service << 'IPTABLES_UNIT'
+[Unit]
+Description=T-Pot iptables: restrict port 64297 to loopback only
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+IPTABLES_UNIT
+
+systemctl daemon-reload
+systemctl enable tpot-iptables.service
+log "tpot-iptables.service registered — rule will be re-applied on every boot"
 
 # ---------------------------------------------------------------------------
 # Phase 13: Apply compose override and start services
@@ -544,37 +571,53 @@ docker compose -f "${COMPOSE_FILE}" down --timeout 30 2>/dev/null || true
 log "T-Pot containers removed; ports released"
 sleep 3
 
+OVERRIDE_FILE="${COMPOSE_DIR}/docker-compose.override.yml"
+
 if [ -n "$TPOT_SVC" ]; then
-  # Create a systemd drop-in that explicitly includes the compose override in
-  # ExecStart.  This guarantees the override is applied on every future boot,
-  # regardless of whether the original service uses an explicit -f flag.
   DROPIN_DIR="/etc/systemd/system/${TPOT_SVC}.service.d"
   mkdir -p "${DROPIN_DIR}"
 
-  cat > "${DROPIN_DIR}/90-compose-override.conf" << DROPIN
+  # Read the original ExecStart from the installed T-Pot service file.
+  # We extend it surgically rather than replacing it wholesale, so that any
+  # extra -f flags, environment variables, or other options T-Pot uses are
+  # preserved.
+  ORIGINAL_EXEC=$(systemctl cat "${TPOT_SVC}" 2>/dev/null \
+    | grep '^ExecStart=' | head -1 | sed 's/^ExecStart=//')
+
+  if [ -n "${ORIGINAL_EXEC}" ] && echo "${ORIGINAL_EXEC}" | grep -qF -- '-f '; then
+    # Service uses explicit -f flags.  Insert our override file before the
+    # action word 'up' so all existing flags are preserved.
+    NEW_EXEC=$(echo "${ORIGINAL_EXEC}" | sed "s| up\b| -f ${OVERRIDE_FILE} up|")
+    cat > "${DROPIN_DIR}/90-compose-override.conf" << DROPIN
 [Service]
-# Clear the original ExecStart and replace with one that explicitly
-# includes the compose override so nginx is bound to 127.0.0.1 only.
+# Extend the original ExecStart to include the compose override file.
+# Only ExecStart is changed; all other service directives are preserved.
 ExecStart=
-ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_DIR}/docker-compose.override.yml up
-ExecStop=
-ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_DIR}/docker-compose.override.yml down --timeout 30
+ExecStart=${NEW_EXEC}
 DROPIN
+    systemctl daemon-reload
+    log "Drop-in created: override file inserted into original ExecStart"
+  else
+    # Service does not use explicit -f flags (relies on WorkingDirectory).
+    # Docker Compose will auto-read docker-compose.override.yml from the
+    # working directory — no drop-in modification needed.
+    log "T-Pot service uses implicit compose discovery; override auto-applied from ${COMPOSE_DIR}"
+  fi
 
-  systemctl daemon-reload
-  log "Systemd drop-in created: ${DROPIN_DIR}/90-compose-override.conf"
-  log "T-Pot service will always start with compose override on future boots"
-
-  systemctl start "${TPOT_SVC}"
-  log "T-Pot service (${TPOT_SVC}) started with compose override"
+  # Start T-Pot.  A failure here is logged as a warning rather than aborting
+  # the post-install script, so oauth2-proxy is always attempted regardless.
+  systemctl start "${TPOT_SVC}" \
+    && log "T-Pot service (${TPOT_SVC}) started with compose override" \
+    || log "WARNING: T-Pot service (${TPOT_SVC}) failed to start — check: journalctl -u ${TPOT_SVC}"
 else
   # No systemd service found — start compose stack directly with both files
   log "No T-Pot systemd service found; starting compose stack directly"
   docker compose \
     -f "${COMPOSE_FILE}" \
-    -f "${COMPOSE_DIR}/docker-compose.override.yml" \
-    up -d
-  log "T-Pot compose stack started"
+    -f "${OVERRIDE_FILE}" \
+    up -d \
+    && log "T-Pot compose stack started" \
+    || log "WARNING: docker compose up failed — check docker logs"
 fi
 
 systemctl enable oauth2-proxy
