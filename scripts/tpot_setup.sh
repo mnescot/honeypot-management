@@ -433,27 +433,56 @@ log "iptables rules saved"
 
 # ---------------------------------------------------------------------------
 # Phase 13: Restart T-Pot with compose override, then start oauth2-proxy
+#
+# The T-Pot Ansible installer starts all containers during installation
+# (Phase 5), before the compose override is written (Phase 7).  A plain
+# systemctl restart may race: Docker tries to re-bind 127.0.0.1:64297 for
+# the new nginx container while the old one still holds the port.
+#
+# Fix: explicitly docker compose down (removes containers, releases all
+# port bindings) then let T-Pot start fresh so the override is applied.
 # ---------------------------------------------------------------------------
 log "=== Phase 13: Start services ==="
 
-if systemctl is-active --quiet tpot 2>/dev/null; then
-  systemctl restart tpot
-  log "T-Pot systemd service restarted"
-elif systemctl is-active --quiet tpotce 2>/dev/null; then
-  systemctl restart tpotce
-  log "tpotce systemd service restarted"
-else
-  log "No tpot/tpotce systemd service found; starting compose stack directly..."
-  COMPOSE_FILE=$(ls "$COMPOSE_DIR"/docker-compose.yml \
-                    "$COMPOSE_DIR"/compose*.yml 2>/dev/null | head -1 || true)
-  if [ -n "$COMPOSE_FILE" ]; then
-    sudo -u tsec docker compose -f "$COMPOSE_FILE" \
+# Identify the T-Pot systemd unit (name varies by installer version)
+TPOT_SVC=""
+for svc in tpot tpotce; do
+  if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "${svc}"; then
+    TPOT_SVC="$svc"
+    break
+  fi
+done
+
+# Locate the primary compose file
+COMPOSE_FILE=$(ls "$COMPOSE_DIR/docker-compose.yml" \
+                  "$COMPOSE_DIR"/compose*.yml 2>/dev/null | head -1 || true)
+
+if [ -n "$COMPOSE_FILE" ]; then
+  # Stop the systemd unit first so it does not race with our compose down
+  if [ -n "$TPOT_SVC" ]; then
+    systemctl stop "$TPOT_SVC" 2>/dev/null || true
+    log "T-Pot service ($TPOT_SVC) stopped"
+  fi
+
+  # Remove all containers so every port binding is fully released before
+  # Docker re-creates nginx with 127.0.0.1:64297 from the override file.
+  docker compose -f "$COMPOSE_FILE" down --timeout 30 2>/dev/null || true
+  log "T-Pot containers removed; ports released"
+  sleep 3
+
+  if [ -n "$TPOT_SVC" ]; then
+    # docker-compose.override.yml in the same directory is picked up
+    # automatically by Docker Compose when the service starts.
+    systemctl start "$TPOT_SVC"
+    log "T-Pot service ($TPOT_SVC) started with compose override"
+  else
+    docker compose -f "$COMPOSE_FILE" \
       -f "$COMPOSE_DIR/docker-compose.override.yml" \
       up -d
     log "T-Pot compose stack started"
-  else
-    log "WARNING: Could not find compose file to restart T-Pot"
   fi
+else
+  log "WARNING: Could not find T-Pot compose file — skipping container restart"
 fi
 
 systemctl enable oauth2-proxy
