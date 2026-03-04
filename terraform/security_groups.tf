@@ -43,7 +43,7 @@ resource "aws_security_group_rule" "mgmt_ssh" {
 resource "aws_security_group_rule" "alb_backend" {
   security_group_id        = aws_security_group.tpot.id
   type                     = "ingress"
-  description              = "oauth2-proxy backend — from ALB only (ALB terminates TLS)"
+  description              = "oauth2-proxy backend - from ALB only (ALB terminates TLS)"
   from_port                = 4180
   to_port                  = 4180
   protocol                 = "tcp"
