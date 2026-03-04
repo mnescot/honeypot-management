@@ -15,7 +15,9 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_lb_target_group" "tpot" {
-  name     = "${var.project}-tg"
+  # ALB target group names allow only alphanumeric characters and hyphens.
+  # Replace any underscores in var.project (e.g. "infosec_honeypot") with hyphens.
+  name     = "${replace(var.project, "_", "-")}-tg"
   port     = 4180
   protocol = "HTTP"
   vpc_id   = var.vpc_id
@@ -35,7 +37,7 @@ resource "aws_lb_target_group" "tpot" {
   }
 
   tags = {
-    Name        = "${var.project}-tg"
+    Name        = "${replace(var.project, "_", "-")}-tg"
     Project     = var.project
     Environment = var.environment
   }
@@ -74,7 +76,7 @@ resource "aws_lb_listener_rule" "tpot" {
   }
 
   tags = {
-    Name        = "${var.project}-rule"
+    Name        = "${replace(var.project, "_", "-")}-rule"
     Project     = var.project
     Environment = var.environment
   }
