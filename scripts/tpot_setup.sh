@@ -337,18 +337,14 @@ log "=== Phase 7: Write docker-compose.override.yml ==="
 
 cat > "${COMPOSE_DIR}/docker-compose.override.yml" << 'OVERRIDE'
 # docker-compose.override.yml
-# Applied on top of T-Pot's main compose file.
-# Binds the nginx web UI port (64297) to 127.0.0.1 so the T-Pot web UI is
-# not directly reachable from the network; all external access goes through
-# oauth2-proxy on port 4180 (ALB terminates TLS).
+# External access to the T-Pot web UI (port 64297) is restricted by the
+# iptables rule applied in Phase 12 (tpot-iptables.service):
+#   iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
 #
-# Port 64295 is intentionally omitted: T-Pot's installer moves the HOST
-# sshd to 64295, so it is managed by the OS — not by Docker.  Adding a
-# container binding for 64295 here causes an "address already in use" error.
-services:
-  nginx:
-    ports:
-      - "127.0.0.1:64297:64297"
+# NOTE: Do NOT override nginx ports here.  Docker Compose APPENDS to the
+# existing ports list rather than replacing it, which would create a duplicate
+# host-port 64297 binding conflict and prevent the nginx container from starting.
+services: {}
 OVERRIDE
 
 chown tsec:tsec "${COMPOSE_DIR}/docker-compose.override.yml"
