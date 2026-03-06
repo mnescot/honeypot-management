@@ -435,7 +435,7 @@ cookie_secure = true
 
 # Upstream: T-Pot nginx on localhost (restricted to loopback by compose override)
 upstreams = ["https://127.0.0.1:64297"]
-ssl_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
+ssl_upstream_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
 
 # Listen on plain HTTP — TLS is terminated at the ALB (ACM certificate).
 # The ALB security group ensures only the ALB can reach this port.
