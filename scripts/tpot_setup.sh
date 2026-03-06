@@ -407,6 +407,18 @@ log "Configuration directory ready: ${OAUTH2_PROXY_CONF_DIR}"
 # ---------------------------------------------------------------------------
 log "=== Phase 10: oauth2-proxy configuration ==="
 
+# oauth2-proxy v7.x treats cookie_secret as raw bytes, not base64-encoded.
+# It must be exactly 16, 24, or 32 bytes.  `openssl rand -base64 32` produces
+# a 44-char string which is rejected.  Normalise to 32 bytes by truncating;
+# the first 32 chars of a base64 string are all printable ASCII (no padding).
+if [ "${#OAUTH2_COOKIE_SECRET}" -gt 32 ]; then
+  OAUTH2_COOKIE_SECRET="${OAUTH2_COOKIE_SECRET:0:32}"
+  log "Cookie secret normalised to 32 bytes for oauth2-proxy compatibility"
+elif [ "${#OAUTH2_COOKIE_SECRET}" -lt 16 ]; then
+  log "ERROR: OAUTH2_COOKIE_SECRET is ${#OAUTH2_COOKIE_SECRET} bytes — must be 16, 24, or 32"
+  exit 1
+fi
+
 cat > "${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg" << EOF
 # oauth2-proxy configuration for T-Pot + Microsoft Entra ID OIDC
 #
