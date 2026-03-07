@@ -433,12 +433,14 @@ client_secret = "${AZURE_CLIENT_SECRET}"
 cookie_secret = "${OAUTH2_COOKIE_SECRET}"
 cookie_secure = true
 
-# Upstream: T-Pot nginx on localhost.
-# Credentials are embedded in the URL so oauth2-proxy passes them as Basic Auth —
-# T-Pot nginx requires its own htpasswd authentication in addition to OIDC.
+# Upstream: T-Pot nginx on localhost (HTTPS with self-signed cert).
 # GODEBUG=http2client=0 (set in the systemd unit) forces HTTP/1.1, preventing
 # the nginx HTTP/2 GOAWAY/ENHANCE_YOUR_CALM error that otherwise causes 502s.
-upstreams = ["https://${TPOT_WEB_USER}:${TPOT_WEB_PASSWORD}@127.0.0.1:64297"]
+# NOTE: Embedding credentials in the URL (https://user:pass@host) causes a
+# nil pointer panic in oauth2-proxy v7.x when ssl_upstream_insecure_skip_verify
+# is also set.  After OIDC auth users receive a single Basic Auth browser prompt
+# for T-Pot credentials; the browser caches them for the session.
+upstreams = ["https://127.0.0.1:64297"]
 ssl_upstream_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
 
 # Listen on plain HTTP — TLS is terminated at the ALB (ACM certificate).
