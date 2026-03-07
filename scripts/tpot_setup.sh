@@ -433,8 +433,12 @@ client_secret = "${AZURE_CLIENT_SECRET}"
 cookie_secret = "${OAUTH2_COOKIE_SECRET}"
 cookie_secure = true
 
-# Upstream: T-Pot nginx on localhost (restricted to loopback by compose override)
-upstreams = ["https://127.0.0.1:64297"]
+# Upstream: T-Pot nginx on localhost.
+# Credentials are embedded in the URL so oauth2-proxy passes them as Basic Auth —
+# T-Pot nginx requires its own htpasswd authentication in addition to OIDC.
+# GODEBUG=http2client=0 (set in the systemd unit) forces HTTP/1.1, preventing
+# the nginx HTTP/2 GOAWAY/ENHANCE_YOUR_CALM error that otherwise causes 502s.
+upstreams = ["https://${TPOT_WEB_USER}:${TPOT_WEB_PASSWORD}@127.0.0.1:64297"]
 ssl_upstream_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
 
 # Listen on plain HTTP — TLS is terminated at the ALB (ACM certificate).
@@ -485,6 +489,10 @@ Type=simple
 User=tsec
 Group=tsec
 ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/oauth2-proxy/oauth2-proxy.cfg
+# Disable HTTP/2 client — T-Pot nginx sends HTTP/2 GOAWAY/ENHANCE_YOUR_CALM
+# after auth challenges, which oauth2-proxy surfaces as 502. Forcing HTTP/1.1
+# avoids the issue entirely; TLS still applies for the upstream connection.
+Environment=GODEBUG=http2client=0
 Restart=always
 RestartSec=5
 StandardOutput=journal
