@@ -387,6 +387,67 @@ rm -rf /tmp/oauth2-proxy.tar.gz /tmp/oauth2-proxy.sha256sum.txt \
 log "oauth2-proxy ${OAUTH2_PROXY_VERSION} installed to ${OAUTH2_PROXY_BIN}"
 
 # ---------------------------------------------------------------------------
+# Phase 8b: Host nginx reverse proxy — T-Pot upstream bridge
+#
+# Problem: oauth2-proxy v7.x panics when combining credentials in the
+# upstream URL with ssl_upstream_insecure_skip_verify.  Even without
+# credentials, T-Pot nginx returns HTTP/2 GOAWAY (ENHANCE_YOUR_CALM) after
+# the Basic Auth 401, which oauth2-proxy surfaces as a 502.
+#
+# Solution: install nginx on the HOST to sit between oauth2-proxy and T-Pot:
+#   oauth2-proxy (HTTP) → host nginx (HTTP/1.1+TLS+BasicAuth) → T-Pot nginx
+#
+# This lets oauth2-proxy use a plain http:// upstream (no TLS, no HTTP/2),
+# while host nginx handles TLS termination, cert verification skip, HTTP/1.1
+# enforcement, and Basic Auth injection transparently.
+#
+# Port 18080 on loopback is used; the default nginx site (port 80) is removed
+# to avoid conflicting with T-Pot's Dionaea/honeypot containers.
+# ---------------------------------------------------------------------------
+log "=== Phase 8b: Host nginx upstream proxy ==="
+
+TPOT_NGINX_PROXY_PORT=18080
+TPOT_NGINX_PROXY_CONF="/etc/nginx/sites-available/tpot-upstream.conf"
+
+apt-get install -y nginx
+# Remove default site — its port-80 listener conflicts with T-Pot honeypots
+rm -f /etc/nginx/sites-enabled/default
+log "nginx installed; default site disabled"
+
+# Compute Basic Auth header value (user:pass → base64, no newline)
+BASIC_AUTH_CREDS=$(printf '%s:%s' "${TPOT_WEB_USER}" "${TPOT_WEB_PASSWORD}" | base64 -w0)
+
+cat > "${TPOT_NGINX_PROXY_CONF}" << EOF
+# tpot-upstream.conf — host nginx bridge between oauth2-proxy and T-Pot nginx.
+# Listens on HTTP (loopback only) so oauth2-proxy needs no TLS config,
+# and proxies upstream via HTTPS/HTTP1.1 with Basic Auth injected.
+server {
+    listen 127.0.0.1:${TPOT_NGINX_PROXY_PORT};
+    server_name localhost;
+
+    location / {
+        proxy_pass          https://127.0.0.1:64297;
+        proxy_http_version  1.1;          # force HTTP/1.1; avoid HTTP/2 GOAWAY
+        proxy_ssl_verify    off;          # T-Pot nginx uses a self-signed cert
+        # Inject T-Pot web-UI credentials — user already authenticated via OIDC.
+        proxy_set_header    Authorization "Basic ${BASIC_AUTH_CREDS}";
+        proxy_set_header    Host            "127.0.0.1:64297";
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # WebSocket support (T-Pot attack-map live feed)
+        proxy_set_header    Upgrade    \$http_upgrade;
+        proxy_set_header    Connection "upgrade";
+    }
+}
+EOF
+
+ln -sf "${TPOT_NGINX_PROXY_CONF}" /etc/nginx/sites-enabled/tpot-upstream.conf
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
+log "Host nginx upstream proxy listening on 127.0.0.1:${TPOT_NGINX_PROXY_PORT}"
+
+# ---------------------------------------------------------------------------
 # Phase 9: Prepare oauth2-proxy configuration directory
 #    TLS is terminated at the ALB (ACM certificate).  oauth2-proxy listens
 #    on plain HTTP port 4180; no self-signed certificate is required.
@@ -433,15 +494,10 @@ client_secret = "${AZURE_CLIENT_SECRET}"
 cookie_secret = "${OAUTH2_COOKIE_SECRET}"
 cookie_secure = true
 
-# Upstream: T-Pot nginx on localhost (HTTPS with self-signed cert).
-# GODEBUG=http2client=0 (set in the systemd unit) forces HTTP/1.1, preventing
-# the nginx HTTP/2 GOAWAY/ENHANCE_YOUR_CALM error that otherwise causes 502s.
-# NOTE: Embedding credentials in the URL (https://user:pass@host) causes a
-# nil pointer panic in oauth2-proxy v7.x when ssl_upstream_insecure_skip_verify
-# is also set.  After OIDC auth users receive a single Basic Auth browser prompt
-# for T-Pot credentials; the browser caches them for the session.
-upstreams = ["https://127.0.0.1:64297"]
-ssl_upstream_insecure_skip_verify = true   # T-Pot nginx uses a self-signed cert internally
+# Upstream: host nginx proxy on localhost (plain HTTP).
+# Host nginx (Phase 8b) handles TLS, HTTP/1.1 enforcement, and Basic Auth
+# injection so oauth2-proxy connects via simple HTTP with no TLS complexity.
+upstreams = ["http://127.0.0.1:18080"]
 
 # Listen on plain HTTP — TLS is terminated at the ALB (ACM certificate).
 # The ALB security group ensures only the ALB can reach this port.
@@ -491,10 +547,6 @@ Type=simple
 User=tsec
 Group=tsec
 ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/oauth2-proxy/oauth2-proxy.cfg
-# Disable HTTP/2 client — T-Pot nginx sends HTTP/2 GOAWAY/ENHANCE_YOUR_CALM
-# after auth challenges, which oauth2-proxy surfaces as 502. Forcing HTTP/1.1
-# avoids the issue entirely; TLS still applies for the upstream connection.
-Environment=GODEBUG=http2client=0
 Restart=always
 RestartSec=5
 StandardOutput=journal
