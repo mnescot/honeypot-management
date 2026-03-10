@@ -81,6 +81,7 @@ upload-scripts:
     name: amazon/aws-cli:latest
     entrypoint: [""]
   before_script:
+    - dnf install -y tar --quiet 2>/dev/null || yum install -y tar -q  # not in minimal AWS CLI image
     - echo "AWS CLI version:"
     - aws --version
   script:
