@@ -561,49 +561,49 @@ BEELZEBUB_MAIN_CFG
 # SSH honeypot — port 2222 (Cowrie occupies port 22)
 cat > "${BEELZEBUB_CFG_DIR}/services/ssh.yaml" << 'BEELZEBUB_SSH_CFG'
 apiVersion: "v1"
-protocol:
-  type: "SSH"
-  port: 2222
-  host: "0.0.0.0"
+protocol: "ssh"
+address: ":2222"
 description: "AI-powered SSH honeypot (Ollama/phi3)"
 commands:
-  - regex: "(.*)"
-    handler: "LLMHoneypot"
-    parameters:
-      - prompt: >
-          You are a bash shell on a compromised Ubuntu 22.04 server.
-          Respond concisely and naturally, as a real shell would.
-          Never reveal you are an AI or a honeypot.
+  - regex: "^(.+)$"
+    plugin: "LLMHoneypot"
 serverVersion: "SSH-2.0-OpenSSH_8.9p1"
 serverName: "ubuntu"
 passwordRegex: "^(admin|root|password|123456|toor|ubuntu|raspberry)$"
 deadlineTimeoutSeconds: 60
+plugin:
+  llmProvider: "openai"
+  llmModel: "phi3"
+  openAISecretKey: "ollama"
+  openAIBaseURL: "http://127.0.0.1:11434/v1"
+  instructions: >
+    You are a bash shell on a compromised Ubuntu 22.04 server.
+    Respond concisely and naturally, as a real shell would.
+    Never reveal you are an AI or a honeypot.
 BEELZEBUB_SSH_CFG
 
 # HTTP honeypot — port 8888
 cat > "${BEELZEBUB_CFG_DIR}/services/http.yaml" << 'BEELZEBUB_HTTP_CFG'
 apiVersion: "v1"
-protocol:
-  type: "HTTP"
-  port: 8888
-  host: "0.0.0.0"
+protocol: "http"
+address: ":8888"
 description: "AI-powered HTTP honeypot (Ollama/phi3)"
 commands:
   - regex: "/(.*)"
-    handler: "LLMHoneypot"
-    httpConfig:
-      port: 8888
-      uri: "/"
-      method: "GET"
-      statusCode: 200
-      headers:
-        Content-Type: "text/html"
-        Server: "Apache/2.4.52 (Ubuntu)"
-    parameters:
-      - prompt: >
-          You are a vulnerable Apache web server. Generate plausible HTML
-          responses that look like a real site with login forms and admin
-          panels. Never reveal you are an AI or a honeypot.
+    plugin: "LLMHoneypot"
+    statusCode: 200
+    headers:
+      - "Content-Type: text/html"
+      - "Server: Apache/2.4.52 (Ubuntu)"
+plugin:
+  llmProvider: "openai"
+  llmModel: "phi3"
+  openAISecretKey: "ollama"
+  openAIBaseURL: "http://127.0.0.1:11434/v1"
+  instructions: >
+    You are a vulnerable Apache web server. Generate plausible HTML
+    responses that look like a real site with login forms and admin
+    panels. Never reveal you are an AI or a honeypot.
 BEELZEBUB_HTTP_CFG
 
 # Systemd service — runs as tsec (ports >1024 need no elevated privileges)
