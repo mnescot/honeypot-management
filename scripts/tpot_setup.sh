@@ -425,6 +425,11 @@ server {
     listen 127.0.0.1:${TPOT_NGINX_PROXY_PORT};
     server_name localhost;
 
+    # oauth2-proxy session cookies are several KB; raise buffer limits to
+    # prevent nginx returning 400 "Request Header Or Cookie Too Large".
+    large_client_header_buffers 8 32k;
+    client_header_buffer_size   32k;
+
     location / {
         proxy_pass          https://127.0.0.1:64297;
         proxy_http_version  1.1;          # force HTTP/1.1; avoid HTTP/2 GOAWAY
@@ -435,6 +440,13 @@ server {
         proxy_set_header    Host            "127.0.0.1:64297";
         proxy_set_header    X-Real-IP       \$remote_addr;
         proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # Strip oauth2-proxy session cookie — T-Pot auth is via injected Basic Auth;
+        # forwarding the large cookie would cause 400 errors at T-Pot nginx.
+        proxy_set_header    Cookie          "";
+        # Buffers for large upstream response headers
+        proxy_buffer_size        128k;
+        proxy_buffers            4 256k;
+        proxy_busy_buffers_size  256k;
         # WebSocket support (T-Pot attack-map live feed)
         proxy_set_header    Upgrade    \$http_upgrade;
         proxy_set_header    Connection "upgrade";
