@@ -55,7 +55,7 @@ build-beelzebub:
     - apk add --no-cache git
   script:
     - |
-      BZB_VERSION=$(grep 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      BZB_VERSION=$(grep -m1 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | cut -d'"' -f2)
       echo "Building Beelzebub v${BZB_VERSION} (linux/amd64)..."
       git clone --depth 1 --branch "v${BZB_VERSION}" \
         https://github.com/mariocandela/beelzebub.git /tmp/bzb
@@ -124,7 +124,7 @@ upload-scripts:
       # needing direct access to github.com — common in LZA/restricted VPCs.
       # The version is read from the setup script to keep them in sync.
       # -----------------------------------------------------------------------
-      OAUTH2_VERSION=$(grep 'OAUTH2_PROXY_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      OAUTH2_VERSION=$(grep -m1 'OAUTH2_PROXY_VERSION=' scripts/tpot_setup.sh | cut -d'"' -f2)
       OAUTH2_ARCH="linux-amd64"
       OAUTH2_TARBALL="oauth2-proxy-v${OAUTH2_VERSION}.${OAUTH2_ARCH}.tar.gz"
       OAUTH2_BASE="https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v${OAUTH2_VERSION}"
@@ -158,7 +158,7 @@ upload-scripts:
       # Stage Beelzebub binary (built by the parallel build-beelzebub job).
       # Tar it so the setup script extraction pattern stays consistent.
       # -----------------------------------------------------------------------
-      BZB_VERSION=$(grep 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      BZB_VERSION=$(grep -m1 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | cut -d'"' -f2)
       BZB_TARBALL="beelzebub_${BZB_VERSION}_linux_amd64.tar.gz"
 
       echo "Staging Beelzebub v${BZB_VERSION} binary..."
