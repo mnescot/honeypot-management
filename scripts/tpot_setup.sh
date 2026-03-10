@@ -64,7 +64,7 @@ TPOT_INSTALL_DIR="/home/tsec/tpotce"
 OAUTH2_PROXY_VERSION="7.14.3"
 OAUTH2_PROXY_BIN="/usr/local/bin/oauth2-proxy"
 OAUTH2_PROXY_CONF_DIR="/etc/oauth2-proxy"
-BEELZEBUB_VERSION="3.4.2"   # verify against github.com/mariocandela/beelzebub/releases
+BEELZEBUB_VERSION="3.6.7"   # verify against github.com/mariocandela/beelzebub/releases
 
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
 

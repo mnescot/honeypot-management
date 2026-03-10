@@ -41,6 +41,36 @@ validate-scripts:
     - if: $CI_MERGE_REQUEST_ID
 
 # ---------------------------------------------------------------------------
+# Stage: upload-scripts (parallel job) — build Beelzebub binary
+#
+# Beelzebub (github.com/mariocandela/beelzebub) publishes source-only releases
+# and requires Go 1.24.  This job builds a static linux/amd64 binary using the
+# official Go image (cross-compiled if the runner is arm64) and saves it as a
+# CI artifact for the upload-scripts job to stage in S3.
+# ---------------------------------------------------------------------------
+build-beelzebub:
+  stage: upload-scripts
+  image: golang:1.24-alpine
+  before_script:
+    - apk add --no-cache git
+  script:
+    - |
+      BZB_VERSION=$(grep 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      echo "Building Beelzebub v${BZB_VERSION} (linux/amd64)..."
+      git clone --depth 1 --branch "v${BZB_VERSION}" \
+        https://github.com/mariocandela/beelzebub.git /tmp/bzb
+      cd /tmp/bzb
+      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "${CI_PROJECT_DIR}/beelzebub" .
+      echo "Binary size: $(du -sh ${CI_PROJECT_DIR}/beelzebub | cut -f1)"
+  artifacts:
+    paths:
+      - beelzebub
+    expire_in: 1 hour
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_ID
+
+# ---------------------------------------------------------------------------
 # Stage: upload-scripts
 # Push the T-Pot setup script and supplementary config files to S3 so the
 # EC2 user-data bootstrap can download them at launch time
@@ -125,21 +155,16 @@ upload-scripts:
 
     - |
       # -----------------------------------------------------------------------
-      # Download Beelzebub from GitHub and stage in S3 for restricted VPCs.
-      # The version is read from the setup script (BEELZEBUB_VERSION variable).
-      # Release artifact naming follows goreleaser convention:
-      #   beelzebub_{version}_linux_amd64.tar.gz
-      # Verify the actual artifact name against:
-      #   https://github.com/mariocandela/beelzebub/releases
+      # Stage Beelzebub binary (built by the parallel build-beelzebub job).
+      # Tar it so the setup script extraction pattern stays consistent.
       # -----------------------------------------------------------------------
       BZB_VERSION=$(grep 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
       BZB_TARBALL="beelzebub_${BZB_VERSION}_linux_amd64.tar.gz"
-      BZB_BASE="https://github.com/mariocandela/beelzebub/releases/download/v${BZB_VERSION}"
 
-      echo "Downloading Beelzebub v${BZB_VERSION}..."
-      curl -fsSL "${BZB_BASE}/${BZB_TARBALL}" -o /tmp/beelzebub.tar.gz
+      echo "Staging Beelzebub v${BZB_VERSION} binary..."
+      tar -czf "/tmp/${BZB_TARBALL}" beelzebub
 
-      aws s3 cp /tmp/beelzebub.tar.gz \
+      aws s3 cp "/tmp/${BZB_TARBALL}" \
         "s3://${S3_SCRIPTS_BUCKET}/tpot/${BZB_TARBALL}" \
         --region "${TF_VAR_aws_region}" \
         --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},beelzebub-version=${BZB_VERSION}"
@@ -164,6 +189,7 @@ upload-scripts:
     - echo "All scripts and digests uploaded successfully"
   dependencies:
     - validate-scripts
+    - build-beelzebub
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_MERGE_REQUEST_ID
