@@ -429,7 +429,7 @@ server {
         proxy_pass          https://127.0.0.1:64297;
         proxy_http_version  1.1;          # force HTTP/1.1; avoid HTTP/2 GOAWAY
         proxy_ssl_verify    off;          # T-Pot nginx uses a self-signed cert
-        proxy_ssl_protocols TLSv1.2;     # T-Pot nginx (Alpine) only supports TLS 1.2;
+        proxy_ssl_protocols TLSv1.3;     # T-Pot nginx (Alpine/24.04.1) only accepts TLS 1.3
         # Inject T-Pot web-UI credentials — user already authenticated via OIDC.
         proxy_set_header    Authorization "Basic ${BASIC_AUTH_CREDS}";
         proxy_set_header    Host            "127.0.0.1:64297";
