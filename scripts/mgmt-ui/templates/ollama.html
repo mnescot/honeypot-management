@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Ollama — T-Pot Management{% endblock %}
+{% block nav_ollama %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center gap-3 mb-4">
+  <h5 class="mb-0 fw-semibold">Ollama Models</h5>
+  <span class="badge {% if active %}badge-running{% else %}badge-stopped{% endif %} fs-6">
+    {{ "Active" if active else "Stopped" }}
+  </span>
+</div>
+
+{% if pulling %}
+<div class="alert alert-info" role="alert">
+  Model pull started — this may take several minutes on a CPU-only instance.
+  Refresh to check installed models.
+  <a href="{{ prefix }}/ollama" class="alert-link ms-2">Refresh</a>
+</div>
+{% endif %}
+
+<!-- Pull new model -->
+<div class="card mb-4">
+  <div class="card-header fw-semibold">Pull a model</div>
+  <div class="card-body">
+    <form method="post" action="{{ prefix }}/ollama/pull" class="d-flex gap-2">
+      <input type="text" name="model" class="form-control form-control-sm w-auto"
+             placeholder="e.g. phi3, llama3.2:3b" required>
+      <button type="submit" class="btn btn-primary btn-sm">Pull</button>
+    </form>
+    <small class="text-muted mt-2 d-block">
+      Find models at <code>ollama.com/library</code>.
+      Recommended for this instance: <code>phi3</code> (~2.3 GB), <code>llama3.2:3b</code> (~2.0 GB).
+    </small>
+  </div>
+</div>
+
+<!-- Installed models -->
+<div class="card">
+  <div class="card-header fw-semibold">Installed models</div>
+  <div class="card-body p-0">
+    {% if models %}
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th class="ps-3">Model</th>
+          <th>Size</th>
+          <th>Modified</th>
+          <th class="pe-3 text-end">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in models %}
+        <tr>
+          <td class="ps-3 font-monospace">{{ m.name }}</td>
+          <td>{{ "%.1f GB" | format(m.size / 1e9) }}</td>
+          <td class="text-muted small">{{ m.modified_at[:10] if m.modified_at else "—" }}</td>
+          <td class="pe-3 text-end">
+            <form method="post" action="{{ prefix }}/ollama/delete"
+                  onsubmit="return confirm('Delete {{ m.name }}?');" class="d-inline">
+              <input type="hidden" name="model" value="{{ m.name }}">
+              <button class="btn btn-sm btn-outline-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted text-center p-4 mb-0">
+      No models installed yet.
+      {% if not active %}Ollama service is not running.{% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

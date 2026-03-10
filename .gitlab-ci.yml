@@ -123,6 +123,44 @@ upload-scripts:
 
       echo "oauth2-proxy uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/${OAUTH2_TARBALL}"
 
+    - |
+      # -----------------------------------------------------------------------
+      # Download Beelzebub from GitHub and stage in S3 for restricted VPCs.
+      # The version is read from the setup script (BEELZEBUB_VERSION variable).
+      # Release artifact naming follows goreleaser convention:
+      #   beelzebub_{version}_linux_amd64.tar.gz
+      # Verify the actual artifact name against:
+      #   https://github.com/mariocandela/beelzebub/releases
+      # -----------------------------------------------------------------------
+      BZB_VERSION=$(grep 'BEELZEBUB_VERSION=' scripts/tpot_setup.sh | head -1 | cut -d'"' -f2)
+      BZB_TARBALL="beelzebub_${BZB_VERSION}_linux_amd64.tar.gz"
+      BZB_BASE="https://github.com/mariocandela/beelzebub/releases/download/v${BZB_VERSION}"
+
+      echo "Downloading Beelzebub v${BZB_VERSION}..."
+      curl -fsSL "${BZB_BASE}/${BZB_TARBALL}" -o /tmp/beelzebub.tar.gz
+
+      aws s3 cp /tmp/beelzebub.tar.gz \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/${BZB_TARBALL}" \
+        --region "${TF_VAR_aws_region}" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},beelzebub-version=${BZB_VERSION}"
+
+      echo "Beelzebub uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/${BZB_TARBALL}"
+
+    - |
+      # -----------------------------------------------------------------------
+      # Package the management UI (scripts/mgmt-ui/) as a tarball and upload
+      # to S3.  The setup script downloads and extracts it to /opt/honeypot-mgmt
+      # -----------------------------------------------------------------------
+      echo "Packaging management UI..."
+      tar -czf /tmp/mgmt-ui.tar.gz -C scripts mgmt-ui
+
+      aws s3 cp /tmp/mgmt-ui.tar.gz \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/mgmt-ui.tar.gz" \
+        --region "${TF_VAR_aws_region}" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},pipeline-id=${CI_PIPELINE_ID}"
+
+      echo "Management UI uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/mgmt-ui.tar.gz"
+
     - echo "All scripts and digests uploaded successfully"
   dependencies:
     - validate-scripts

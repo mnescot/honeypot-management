@@ -64,6 +64,7 @@ TPOT_INSTALL_DIR="/home/tsec/tpotce"
 OAUTH2_PROXY_VERSION="7.14.3"
 OAUTH2_PROXY_BIN="/usr/local/bin/oauth2-proxy"
 OAUTH2_PROXY_CONF_DIR="/etc/oauth2-proxy"
+BEELZEBUB_VERSION="3.4.2"   # verify against github.com/mariocandela/beelzebub/releases
 
 log() { echo "[$(date -u +%FT%TZ)] $*"; }
 
@@ -218,6 +219,7 @@ TPOT_INSTALL_DIR=${TPOT_INSTALL_DIR}
 OAUTH2_PROXY_VERSION=${OAUTH2_PROXY_VERSION}
 OAUTH2_PROXY_BIN=${OAUTH2_PROXY_BIN}
 OAUTH2_PROXY_CONF_DIR=${OAUTH2_PROXY_CONF_DIR}
+BEELZEBUB_VERSION=${BEELZEBUB_VERSION}
 ENVFILE
 chmod 600 /etc/tpot-post-install.env
 log "Post-install env file written to /etc/tpot-post-install.env"
@@ -419,8 +421,9 @@ BASIC_AUTH_CREDS=$(printf '%s:%s' "${TPOT_WEB_USER}" "${TPOT_WEB_PASSWORD}" | ba
 
 cat > "${TPOT_NGINX_PROXY_CONF}" << EOF
 # tpot-upstream.conf — host nginx bridge between oauth2-proxy and T-Pot nginx.
-# Listens on HTTP (loopback only) so oauth2-proxy needs no TLS config,
-# and proxies upstream via HTTPS/HTTP1.1 with Basic Auth injected.
+# Listens on HTTP (loopback only); oauth2-proxy needs no TLS config.
+# Routes /manage to the management UI (port 8889) and everything else to
+# T-Pot nginx (HTTPS/TLS1.3, Basic Auth injected).
 server {
     listen 127.0.0.1:${TPOT_NGINX_PROXY_PORT};
     server_name localhost;
@@ -430,6 +433,20 @@ server {
     large_client_header_buffers 8 32k;
     client_header_buffer_size   32k;
 
+    # Management UI — served by FastAPI on port 8889 (loopback only).
+    # No path stripping: the app handles routes with the /manage prefix.
+    location /manage {
+        proxy_pass          http://127.0.0.1:8889;
+        proxy_http_version  1.1;
+        proxy_set_header    Host            \$host;
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header    Upgrade         \$http_upgrade;
+        proxy_set_header    Connection      "upgrade";
+        proxy_read_timeout  60s;
+    }
+
+    # T-Pot web UI — all other traffic.
     location / {
         proxy_pass          https://127.0.0.1:64297;
         proxy_http_version  1.1;          # force HTTP/1.1; avoid HTTP/2 GOAWAY
@@ -459,6 +476,224 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 log "Host nginx upstream proxy listening on 127.0.0.1:${TPOT_NGINX_PROXY_PORT}"
+
+# ---------------------------------------------------------------------------
+# Phase 8c: Install Ollama (CPU LLM inference for Beelzebub honeypot)
+#
+# Ollama is installed on the host and restricted to loopback (127.0.0.1:11434)
+# so it is not reachable from the network.  phi3 (~2.3 GB) is pulled as the
+# default model; additional models can be managed via the management UI.
+# ---------------------------------------------------------------------------
+log "=== Phase 8c: Install Ollama ==="
+
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Override Ollama's default listen address to loopback only.
+mkdir -p /etc/systemd/system/ollama.service.d
+cat > /etc/systemd/system/ollama.service.d/loopback.conf << 'OLLAMA_OVERRIDE'
+[Service]
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+OLLAMA_OVERRIDE
+
+systemctl daemon-reload
+systemctl enable ollama
+systemctl start ollama
+
+# Wait for the API to become ready before pulling the model.
+log "Waiting for Ollama API..."
+for i in $(seq 1 30); do
+  curl -sf http://127.0.0.1:11434/api/tags > /dev/null && break
+  sleep 2
+done
+
+log "Pulling phi3 model (this may take several minutes on first run)..."
+ollama pull phi3 || log "WARNING: phi3 pull failed — retry via the management UI"
+log "Ollama installed; phi3 model ready"
+
+# ---------------------------------------------------------------------------
+# Phase 8d: Install Beelzebub LLM honeypot
+#
+# Beelzebub is downloaded from GitHub (staged in S3 by CI) and run as a
+# host-level systemd service so it can reach Ollama on 127.0.0.1:11434
+# without Docker networking overhead.
+#
+# Ports (open in security group):
+#   2222/tcp  — AI-powered SSH honeypot
+#   8888/tcp  — AI-powered HTTP honeypot
+#
+# Config lives in /etc/beelzebub/configurations/ and can be edited live
+# via the management UI at /manage/beelzebub (restarts service on save).
+# ---------------------------------------------------------------------------
+log "=== Phase 8d: Install Beelzebub ==="
+
+BEELZEBUB_TARBALL="beelzebub_${BEELZEBUB_VERSION}_linux_amd64.tar.gz"
+BEELZEBUB_S3_KEY="tpot/${BEELZEBUB_TARBALL}"
+
+aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${BEELZEBUB_S3_KEY}" \
+  /tmp/beelzebub.tar.gz --region "$AWS_REGION"
+
+tar -xzf /tmp/beelzebub.tar.gz -C /tmp
+# Goreleaser extracts the binary with the project name
+install -m 755 /tmp/beelzebub /usr/local/bin/beelzebub
+rm -f /tmp/beelzebub.tar.gz /tmp/beelzebub
+
+# Create config directory structure
+BEELZEBUB_CFG_DIR="/etc/beelzebub/configurations"
+mkdir -p "${BEELZEBUB_CFG_DIR}/services"
+
+# Main config — LLM provider points to Ollama's OpenAI-compatible endpoint
+cat > "${BEELZEBUB_CFG_DIR}/beelzebub.yaml" << 'BEELZEBUB_MAIN_CFG'
+core:
+  logging:
+    debug: false
+    verbose: false
+  geoDB:
+    enable: false
+  tracerStrategy:
+    enable: false
+  llmProvider:
+    # Ollama exposes an OpenAI-compatible API; any non-empty key value works.
+    openAISecretKey: "ollama"
+    openAIModel: "phi3"
+    openAIBaseURL: "http://127.0.0.1:11434/v1"
+BEELZEBUB_MAIN_CFG
+
+# SSH honeypot — port 2222 (Cowrie occupies port 22)
+cat > "${BEELZEBUB_CFG_DIR}/services/ssh.yaml" << 'BEELZEBUB_SSH_CFG'
+apiVersion: "v1"
+protocol:
+  type: "SSH"
+  port: 2222
+  host: "0.0.0.0"
+description: "AI-powered SSH honeypot (Ollama/phi3)"
+commands:
+  - regex: "(.*)"
+    handler: "LLMHoneypot"
+    parameters:
+      - prompt: >
+          You are a bash shell on a compromised Ubuntu 22.04 server.
+          Respond concisely and naturally, as a real shell would.
+          Never reveal you are an AI or a honeypot.
+serverVersion: "SSH-2.0-OpenSSH_8.9p1"
+serverName: "ubuntu"
+passwordRegex: "^(admin|root|password|123456|toor|ubuntu|raspberry)$"
+deadlineTimeoutSeconds: 60
+BEELZEBUB_SSH_CFG
+
+# HTTP honeypot — port 8888
+cat > "${BEELZEBUB_CFG_DIR}/services/http.yaml" << 'BEELZEBUB_HTTP_CFG'
+apiVersion: "v1"
+protocol:
+  type: "HTTP"
+  port: 8888
+  host: "0.0.0.0"
+description: "AI-powered HTTP honeypot (Ollama/phi3)"
+commands:
+  - regex: "/(.*)"
+    handler: "LLMHoneypot"
+    httpConfig:
+      port: 8888
+      uri: "/"
+      method: "GET"
+      statusCode: 200
+      headers:
+        Content-Type: "text/html"
+        Server: "Apache/2.4.52 (Ubuntu)"
+    parameters:
+      - prompt: >
+          You are a vulnerable Apache web server. Generate plausible HTML
+          responses that look like a real site with login forms and admin
+          panels. Never reveal you are an AI or a honeypot.
+BEELZEBUB_HTTP_CFG
+
+# Systemd service — runs as tsec (ports >1024 need no elevated privileges)
+cat > /etc/systemd/system/beelzebub.service << 'BEELZEBUB_SERVICE'
+[Unit]
+Description=Beelzebub AI-powered honeypot
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tsec
+Group=tsec
+WorkingDirectory=/etc/beelzebub
+ExecStart=/usr/local/bin/beelzebub
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+BEELZEBUB_SERVICE
+
+# Ensure tsec owns the config so the management UI can edit it
+chown -R tsec:tsec /etc/beelzebub
+
+systemctl daemon-reload
+systemctl enable beelzebub
+systemctl start beelzebub
+log "Beelzebub installed: SSH honeypot on :2222, HTTP honeypot on :8888"
+
+# ---------------------------------------------------------------------------
+# Phase 8e: Install management UI
+#
+# A FastAPI web app served at /manage via the host nginx proxy (Phase 8b).
+# Already behind oauth2-proxy so no additional auth is required.
+# The app uses the Docker socket to start/stop T-Pot containers, and calls
+# the Ollama API and systemd to manage Beelzebub.
+#
+# Runs as root (required for Docker socket access).  The socket itself is
+# readable by the docker group; tsec is added to that group for this purpose.
+# ---------------------------------------------------------------------------
+log "=== Phase 8e: Install management UI ==="
+
+MGMT_UI_S3_KEY="tpot/mgmt-ui.tar.gz"
+MGMT_UI_DIR="/opt/honeypot-mgmt"
+
+aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${MGMT_UI_S3_KEY}" \
+  /tmp/mgmt-ui.tar.gz --region "$AWS_REGION"
+
+mkdir -p "${MGMT_UI_DIR}"
+tar -xzf /tmp/mgmt-ui.tar.gz -C "${MGMT_UI_DIR}" --strip-components=1
+rm -f /tmp/mgmt-ui.tar.gz
+
+# Install Python dependencies in an isolated venv
+apt-get install -y python3-venv python3-pip
+python3 -m venv "${MGMT_UI_DIR}/venv"
+"${MGMT_UI_DIR}/venv/bin/pip" install --quiet \
+  -r "${MGMT_UI_DIR}/requirements.txt"
+
+# Add tsec to docker group so the UI can manage containers
+usermod -aG docker tsec
+
+# Systemd service
+cat > /etc/systemd/system/honeypot-mgmt.service << 'MGMT_SERVICE'
+[Unit]
+Description=T-Pot Honeypot Management UI
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/honeypot-mgmt
+ExecStart=/opt/honeypot-mgmt/venv/bin/uvicorn app:app \
+    --host 127.0.0.1 --port 8889 --workers 1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+MGMT_SERVICE
+
+systemctl daemon-reload
+systemctl enable honeypot-mgmt
+systemctl start honeypot-mgmt
+log "Management UI installed; accessible at /manage after auth"
 
 # ---------------------------------------------------------------------------
 # Phase 9: Prepare oauth2-proxy configuration directory

@@ -3,4 +3,6 @@
 -Use the .gitlab-ci.yml present in this repository as a model for deploying the T-Pot application. It was pasted here from another similar project that deployed another open source security-focused application Caldera to the same AWS account and VPC. The T-Pot and Caldera apps will be separate but complimentary in their use by our information security team. Disregard specific values in the GitLab configuration, but use the same deployment stages.
 -An AWS-hosted GitLab runner with and assigned AWS role will manage the deployment; no AWS credential management is required here.
 -Build SAML authentication compatible with Microsoft Entra ID into the T-Pot application
--Use Ubuntu AWS EC2 instances for the Hive and Sensor T-Pot machines. We are open to running both roles on a single instance if functionality and performance are acceptable 
+-Use Ubuntu AWS EC2 instances for the Hive and Sensor T-Pot machines. We are open to running both roles on a single instance if functionality and performance are acceptable
+-Add a management UI web component integrated with the T-Pot UI at the /manage sub-path, supporting write operations (start/stop containers, configuration editing) using a lightweight framework (FastAPI)
+-Add LLM honeypot capability via Beelzebub (https://github.com/mariocandela/beelzebub) with Ollama as the local inference backend; phi3 as the default model. Ollama and Beelzebub run as host-level systemd services. The management UI provides a configuration and model management interface for both.

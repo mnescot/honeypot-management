@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Beelzebub — T-Pot Management{% endblock %}
+{% block nav_bzb %}active{% endblock %}
+
+{% block content %}
+{% if saved %}
+<div class="alert alert-success alert-dismissible fade show" role="alert">
+  Configuration saved and Beelzebub restarted.
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-danger alert-dismissible fade show" role="alert">
+  YAML error: {{ error }}
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<div class="d-flex align-items-center gap-3 mb-4">
+  <h5 class="mb-0 fw-semibold">Beelzebub LLM Honeypot</h5>
+  <span class="badge {% if active %}badge-running{% else %}badge-stopped{% endif %} fs-6">
+    {{ "Active" if active else "Stopped" }}
+  </span>
+  <form method="post" action="{{ prefix }}/beelzebub/toggle" class="ms-2">
+    <button class="btn btn-sm {% if active %}btn-outline-warning{% else %}btn-outline-success{% endif %}">
+      {{ "Stop" if active else "Start" }}
+    </button>
+  </form>
+</div>
+
+<p class="text-muted small mb-4">
+  Beelzebub uses Ollama/phi3 as its LLM backend (port 11434).
+  SSH honeypot listens on port 2222; HTTP honeypot on port 8888.
+  Saving any config automatically restarts the service.
+</p>
+
+<!-- Tab navigation -->
+<ul class="nav nav-tabs mb-3" id="cfgTabs">
+  <li class="nav-item">
+    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-main">
+      Main config
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ssh">
+      SSH service
+    </button>
+  </li>
+  <li class="nav-item">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-http">
+      HTTP service
+    </button>
+  </li>
+</ul>
+
+<div class="tab-content">
+  {% for tab_id, label, file_key, content in [
+      ("tab-main", "beelzebub.yaml",           "main", main_cfg),
+      ("tab-ssh",  "services/ssh.yaml",         "ssh",  ssh_cfg),
+      ("tab-http", "services/http.yaml",        "http", http_cfg),
+  ] %}
+  <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ tab_id }}">
+    <div class="card">
+      <div class="card-header text-muted small font-monospace">{{ label }}</div>
+      <div class="card-body">
+        <form method="post" action="{{ prefix }}/beelzebub/save">
+          <input type="hidden" name="config_file" value="{{ file_key }}">
+          <textarea name="config_body" class="cfg form-control mb-3"
+                    rows="20">{{ content }}</textarea>
+          <button type="submit" class="btn btn-primary btn-sm">Save &amp; Restart</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

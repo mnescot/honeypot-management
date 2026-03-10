@@ -26,9 +26,9 @@ variable "subnet_ids" {
 # ---------------------------------------------------------------------------
 
 variable "instance_type" {
-  description = "EC2 instance type for the T-Pot server. T-Pot recommends at least 8 GB RAM (t3.xlarge = 4 vCPU / 16 GB)."
+  description = "EC2 instance type for the T-Pot server. t3.2xlarge (8 vCPU / 32 GB) is recommended when running Ollama LLM inference for Beelzebub; t3.xlarge (4 vCPU / 16 GB) is the minimum without LLM features."
   type        = string
-  default     = "t3.xlarge"
+  default     = "t3.2xlarge"
 }
 
 variable "key_name" {

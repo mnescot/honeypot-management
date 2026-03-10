@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — T-Pot Management{% endblock %}
+{% block nav_dash %}active{% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-4">
+  <!-- Summary cards -->
+  <div class="col-auto">
+    <div class="card px-3 py-2">
+      <small class="text-muted">Honeypots running</small>
+      <div class="fs-4 fw-bold text-success">
+        {{ containers | selectattr("running") | selectattr("infra", "equalto", false) | list | length }}
+        <small class="text-muted fs-6">/ {{ containers | selectattr("infra", "equalto", false) | list | length }}</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="card px-3 py-2">
+      <small class="text-muted">Beelzebub</small>
+      <div class="fs-5 fw-bold {% if bzb_active %}text-success{% else %}text-secondary{% endif %}">
+        {{ "Active" if bzb_active else "Stopped" }}
+      </div>
+    </div>
+  </div>
+  <div class="col-auto">
+    <div class="card px-3 py-2">
+      <small class="text-muted">Ollama</small>
+      <div class="fs-5 fw-bold {% if ollama_active %}text-success{% else %}text-secondary{% endif %}">
+        {{ "Active" if ollama_active else "Stopped" }}
+        {% if models %}<small class="text-muted fs-6">({{ models | length }} model{{ 's' if models | length != 1 }})</small>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Honeypot containers -->
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">Honeypot Containers</span>
+    <small class="text-muted">Start/stop individual sensors</small>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th class="ps-3">Container</th>
+          <th>Image</th>
+          <th>Status</th>
+          <th>Type</th>
+          <th class="pe-3 text-end">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in containers %}
+        <tr>
+          <td class="ps-3 font-monospace">{{ c.name }}</td>
+          <td class="text-muted small">{{ c.image | truncate(45, true) }}</td>
+          <td>
+            <span class="badge {% if c.running %}badge-running{% else %}badge-stopped{% endif %}">
+              {{ c.status }}
+            </span>
+          </td>
+          <td>
+            {% if c.infra %}
+            <span class="badge badge-infra">infra</span>
+            {% else %}
+            <span class="badge bg-secondary">honeypot</span>
+            {% endif %}
+          </td>
+          <td class="pe-3 text-end">
+            {% if c.running %}
+            <form method="post" action="{{ prefix }}/container/{{ c.name }}/stop"
+                  onsubmit="return confirm('Stop {{ c.name }}?');" class="d-inline">
+              <button class="btn btn-sm btn-outline-warning">Stop</button>
+            </form>
+            {% else %}
+            <form method="post" action="{{ prefix }}/container/{{ c.name }}/start"
+                  class="d-inline">
+              <button class="btn btn-sm btn-outline-success">Start</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted p-3">
+          No containers found — is Docker accessible?
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Ollama quick view -->
+{% if models %}
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span class="fw-semibold">Loaded Ollama Models</span>
+    <a href="{{ prefix }}/ollama" class="btn btn-sm btn-outline-secondary">Manage</a>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr><th class="ps-3">Model</th><th>Size</th><th>Modified</th></tr>
+      </thead>
+      <tbody>
+        {% for m in models %}
+        <tr>
+          <td class="ps-3 font-monospace">{{ m.name }}</td>
+          <td class="text-muted">{{ "%.1f GB" | format(m.size / 1e9) }}</td>
+          <td class="text-muted small">{{ m.modified_at[:10] if m.modified_at else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

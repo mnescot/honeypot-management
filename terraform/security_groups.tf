@@ -332,6 +332,36 @@ resource "aws_security_group_rule" "hp_ldap" {
 }
 
 # ---------------------------------------------------------------------------
+# Beelzebub LLM honeypot ports
+# Beelzebub runs as a host service alongside T-Pot.  Cowrie occupies port 22
+# (SSH) so Beelzebub uses 2222.  Port 8888 is used for its HTTP honeypot.
+# ---------------------------------------------------------------------------
+
+# SSH LLM honeypot (Beelzebub)
+resource "aws_security_group_rule" "hp_beelzebub_ssh" {
+  security_group_id = aws_security_group.tpot.id
+  type              = "ingress"
+  description       = "Honeypot - AI SSH (Beelzebub/Ollama)"
+  from_port         = 2222
+  to_port           = 2222
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
+# HTTP LLM honeypot (Beelzebub)
+resource "aws_security_group_rule" "hp_beelzebub_http" {
+  security_group_id = aws_security_group.tpot.id
+  type              = "ingress"
+  description       = "Honeypot - AI HTTP (Beelzebub/Ollama)"
+  from_port         = 8888
+  to_port           = 8888
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
+# ---------------------------------------------------------------------------
 # Egress — unrestricted outbound
 # ---------------------------------------------------------------------------
 
