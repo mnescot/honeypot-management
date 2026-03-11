@@ -29,10 +29,15 @@ OLLAMA_API         = "http://127.0.0.1:11434"
 TEMPLATES_DIR      = Path(__file__).parent / "templates"
 
 # T-Pot infrastructure containers — shown separately from honeypots.
+# "map_*" variants (map_data, map_web) are matched by prefix below.
 INFRA_NAMES = frozenset({
     "nginx", "elasticsearch", "kibana", "logstash",
-    "map", "spiderfoot", "tanner_phpox", "tanner_redis",
+    "spiderfoot", "tanner_phpox", "tanner_redis", "tpotinit",
 })
+
+
+def _is_infra(name: str) -> bool:
+    return name in INFRA_NAMES or name.startswith("map_")
 
 app       = FastAPI(title="T-Pot Management UI", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -55,7 +60,7 @@ def list_containers() -> list[dict[str, Any]]:
                 "image":   c.image.tags[0] if c.image.tags else c.image.short_id,
                 "status":  c.status,
                 "running": c.status == "running",
-                "infra":   c.name in INFRA_NAMES,
+                "infra":   _is_infra(c.name),
             })
         return sorted(rows, key=lambda x: (x["infra"], x["name"]))
     except Exception:
@@ -118,6 +123,32 @@ async def stop_container(name: str):
         _docker().containers.get(name).stop(timeout=10)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return RedirectResponse(PREFIX + "/", status_code=303)
+
+
+@app.post(PREFIX + "/containers/stop-all")
+async def stop_all_honeypots():
+    """Stop every running honeypot container (leaves infra containers untouched)."""
+    client = _docker()
+    for c in client.containers.list():
+        if not _is_infra(c.name):
+            try:
+                c.stop(timeout=10)
+            except Exception:
+                pass
+    return RedirectResponse(PREFIX + "/", status_code=303)
+
+
+@app.post(PREFIX + "/containers/start-all")
+async def start_all_honeypots():
+    """Start every stopped honeypot container."""
+    client = _docker()
+    for c in client.containers.list(all=True):
+        if not _is_infra(c.name) and c.status != "running":
+            try:
+                c.start()
+            except Exception:
+                pass
     return RedirectResponse(PREFIX + "/", status_code=303)
 
 

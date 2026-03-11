@@ -984,6 +984,38 @@ systemctl start oauth2-proxy
 log "oauth2-proxy started"
 
 # ---------------------------------------------------------------------------
+# Phase 13b: Stop all honeypot containers so they start in a known-stopped
+#   state.  Users selectively start/stop them via the management UI.
+#   Infrastructure containers (nginx, elasticsearch, kibana, logstash,
+#   spiderfoot, tanner_phpox, tanner_redis, tpotinit, map_*) are left running.
+# ---------------------------------------------------------------------------
+log "=== Phase 13b: Stop honeypot containers (pausing for T-Pot start-up) ==="
+sleep 45  # allow tpotinit to finish and all containers to reach running state
+
+INFRA_LIST="nginx elasticsearch kibana logstash spiderfoot tanner_phpox tanner_redis tpotinit"
+
+docker ps --format '{{.Names}}' | while IFS= read -r CNAME; do
+  # Keep infrastructure containers and map_* containers running
+  IS_INFRA=false
+  for INFRA in ${INFRA_LIST}; do
+    if [ "${CNAME}" = "${INFRA}" ]; then
+      IS_INFRA=true
+      break
+    fi
+  done
+  # map_* prefix check
+  case "${CNAME}" in map_*) IS_INFRA=true ;; esac
+
+  if [ "${IS_INFRA}" = "false" ]; then
+    docker stop "${CNAME}" 2>/dev/null \
+      && log "Stopped honeypot container: ${CNAME}" \
+      || log "WARNING: could not stop ${CNAME}"
+  fi
+done
+
+log "All honeypot containers stopped — use /manage to start them selectively"
+
+# ---------------------------------------------------------------------------
 # Phase 14: Summary and self-disable
 # ---------------------------------------------------------------------------
 log "==================================================================="

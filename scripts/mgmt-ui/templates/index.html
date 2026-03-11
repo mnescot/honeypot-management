@@ -37,7 +37,15 @@
 <div class="card mb-4">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span class="fw-semibold">Honeypot Containers</span>
-    <small class="text-muted">Start/stop individual sensors</small>
+    <span class="d-flex gap-2">
+      <form method="post" action="{{ prefix }}/containers/start-all" class="d-inline">
+        <button class="btn btn-sm btn-outline-success">Start All</button>
+      </form>
+      <form method="post" action="{{ prefix }}/containers/stop-all"
+            onsubmit="return confirm('Stop all honeypot containers?');" class="d-inline">
+        <button class="btn btn-sm btn-outline-warning">Stop All</button>
+      </form>
+    </span>
   </div>
   <div class="card-body p-0">
     <table class="table table-sm mb-0 align-middle">
