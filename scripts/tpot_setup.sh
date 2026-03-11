@@ -371,6 +371,22 @@ OVERRIDE
 chown tsec:tsec "${COMPOSE_DIR}/docker-compose.override.yml"
 log "docker-compose.override.yml written to ${COMPOSE_DIR}"
 
+# Remove port 443 from honeytrap in T-Pot's base compose file.
+# Docker Compose APPENDS to port lists in overrides, so we cannot remove a
+# port via docker-compose.override.yml.  Instead we patch the base file
+# directly: citrixhoneypot owns port 443; honeytrap should not bind it.
+COMPOSE_BASE="${COMPOSE_DIR}/docker-compose.yml"
+if [ -f "${COMPOSE_BASE}" ]; then
+  if grep -q '"443:443"' "${COMPOSE_BASE}"; then
+    sed -i '/"443:443"/d' "${COMPOSE_BASE}"
+    log "Removed port 443:443 from base compose (honeytrap conflict resolved)"
+  else
+    log "Port 443:443 not found in base compose — no patch needed"
+  fi
+else
+  log "WARNING: base compose file not found at ${COMPOSE_BASE}"
+fi
+
 # Pre-create the citrixhoneypot log directory (tpotinit may not know about
 # services added via override; container runs as UID 2000).
 mkdir -p /data/citrixhoneypot/log
