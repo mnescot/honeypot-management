@@ -361,13 +361,37 @@ resource "aws_security_group_rule" "hp_beelzebub_ssh" {
   ipv6_cidr_blocks  = ["::/0"]
 }
 
-# HTTP LLM honeypot (Beelzebub)
+# HTTP LLM honeypot (Beelzebub) — Apache persona
 resource "aws_security_group_rule" "hp_beelzebub_http" {
   security_group_id = aws_security_group.tpot.id
   type              = "ingress"
-  description       = "Honeypot - AI HTTP (Beelzebub/Ollama)"
+  description       = "Honeypot - AI HTTP Apache (Beelzebub/Ollama)"
   from_port         = 8888
   to_port           = 8888
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
+# HTTP LLM honeypot (Beelzebub) — Citrix NetScaler persona
+resource "aws_security_group_rule" "hp_beelzebub_http_citrix" {
+  security_group_id = aws_security_group.tpot.id
+  type              = "ingress"
+  description       = "Honeypot - AI HTTP Citrix (Beelzebub/Ollama)"
+  from_port         = 8890
+  to_port           = 8890
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
+# HTTP LLM honeypot (Beelzebub) — WordPress persona
+resource "aws_security_group_rule" "hp_beelzebub_http_wordpress" {
+  security_group_id = aws_security_group.tpot.id
+  type              = "ingress"
+  description       = "Honeypot - AI HTTP WordPress (Beelzebub/Ollama)"
+  from_port         = 8891
+  to_port           = 8891
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
   ipv6_cidr_blocks  = ["::/0"]

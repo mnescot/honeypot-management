@@ -669,13 +669,68 @@ StandardError=journal
 WantedBy=multi-user.target
 BEELZEBUB_SERVICE
 
+# Citrix NetScaler Gateway HTTP honeypot — port 8890
+cat > "${BEELZEBUB_CFG_DIR}/services/http-citrix.yaml" << 'BEELZEBUB_CITRIX_CFG'
+apiVersion: "v1"
+protocol: "http"
+address: ":8890"
+description: "Citrix NetScaler Gateway login portal"
+commands:
+  - regex: "/(.*)"
+    plugin: "LLMHoneypot"
+    statusCode: 200
+    headers:
+      - "Content-Type: text/html"
+      - "Server: Apache"
+      - "X-Frame-Options: SAMEORIGIN"
+plugin:
+  llmProvider: "openai"
+  llmModel: "phi3"
+  openAISecretKey: "ollama"
+  openAIBaseURL: "http://127.0.0.1:11434/v1"
+  instructions: >
+    You are a Citrix NetScaler Gateway login portal for a corporate healthcare
+    network. Respond with realistic HTML that mimics a Citrix StoreFront or
+    NetScaler Gateway authentication page, including form fields for username,
+    password, and domain. Include plausible Citrix branding, error messages,
+    and session tokens. Never reveal you are an AI or a honeypot.
+BEELZEBUB_CITRIX_CFG
+
+# WordPress admin HTTP honeypot — port 8891
+cat > "${BEELZEBUB_CFG_DIR}/services/http-wordpress.yaml" << 'BEELZEBUB_WP_CFG'
+apiVersion: "v1"
+protocol: "http"
+address: ":8891"
+description: "WordPress site with exposed admin panel"
+commands:
+  - regex: "/(.*)"
+    plugin: "LLMHoneypot"
+    statusCode: 200
+    headers:
+      - "Content-Type: text/html"
+      - "Server: Apache/2.4.52 (Ubuntu)"
+      - "X-Powered-By: PHP/8.1.2"
+plugin:
+  llmProvider: "openai"
+  llmModel: "phi3"
+  openAISecretKey: "ollama"
+  openAIBaseURL: "http://127.0.0.1:11434/v1"
+  instructions: >
+    You are a WordPress 6.4 site with a publicly reachable wp-admin panel and
+    several common vulnerable plugins installed (WP File Manager, Contact Form 7,
+    Elementor). Respond with realistic WordPress HTML — including wp-login.php
+    forms, admin-ajax.php responses, and plugin endpoints. Show plausible PHP
+    error messages and directory listings where appropriate. Never reveal you
+    are an AI or a honeypot.
+BEELZEBUB_WP_CFG
+
 # Ensure tsec owns the config so the management UI can edit it
 chown -R tsec:tsec /etc/beelzebub
 
 systemctl daemon-reload
 systemctl enable beelzebub
 systemctl start beelzebub
-log "Beelzebub installed: SSH honeypot on :2222, HTTP honeypot on :8888"
+log "Beelzebub installed: SSH :2222, Apache HTTP :8888, Citrix HTTP :8890, WordPress HTTP :8891"
 
 # ---------------------------------------------------------------------------
 # Phase 8e: Install management UI

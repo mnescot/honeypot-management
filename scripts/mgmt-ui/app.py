@@ -22,8 +22,9 @@ from fastapi.templating import Jinja2Templates
 # ---------------------------------------------------------------------------
 PREFIX             = "/manage"
 BEELZEBUB_CFG      = Path("/etc/beelzebub/configurations/beelzebub.yaml")
-BEELZEBUB_SSH_CFG  = Path("/etc/beelzebub/configurations/services/ssh.yaml")
-BEELZEBUB_HTTP_CFG = Path("/etc/beelzebub/configurations/services/http.yaml")
+BEELZEBUB_SVC_DIR  = Path("/etc/beelzebub/configurations/services")
+BEELZEBUB_SSH_CFG  = BEELZEBUB_SVC_DIR / "ssh.yaml"
+BEELZEBUB_HTTP_CFG = BEELZEBUB_SVC_DIR / "http.yaml"
 BEELZEBUB_SERVICE  = "beelzebub"
 OLLAMA_API         = "http://127.0.0.1:11434"
 TEMPLATES_DIR      = Path(__file__).parent / "templates"
@@ -231,3 +232,46 @@ async def pull_model(model: str = Form(...)):
 async def delete_model(model: str = Form(...)):
     subprocess.run(["ollama", "rm", model.strip()], check=False)
     return RedirectResponse(PREFIX + "/ollama", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Routes — Red team target guide
+# ---------------------------------------------------------------------------
+
+def _beelzebub_endpoints() -> list[dict[str, Any]]:
+    """Parse every Beelzebub service YAML and return endpoint metadata."""
+    endpoints = []
+    if not BEELZEBUB_SVC_DIR.exists():
+        return endpoints
+    for cfg_path in sorted(BEELZEBUB_SVC_DIR.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(cfg_path.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        protocol = str(data.get("protocol", "")).lower()
+        address  = str(data.get("address", ""))
+        port     = address.lstrip(":") if address.startswith(":") else address
+        plugin   = data.get("plugin", {})
+        instructions = str(plugin.get("instructions", "")).strip()
+        endpoints.append({
+            "file":         cfg_path.name,
+            "protocol":     protocol,
+            "port":         port,
+            "description":  data.get("description", cfg_path.stem),
+            "instructions": instructions[:120] + "…" if len(instructions) > 120 else instructions,
+        })
+    return endpoints
+
+
+@app.get(PREFIX + "/redteam", response_class=HTMLResponse)
+async def redteam_page(request: Request):
+    endpoints = _beelzebub_endpoints()
+    http_eps  = [e for e in endpoints if e["protocol"] == "http"]
+    ssh_eps   = [e for e in endpoints if e["protocol"] == "ssh"]
+    return templates.TemplateResponse("redteam.html", {
+        "request":    request,
+        "prefix":     PREFIX,
+        "endpoints":  endpoints,
+        "http_eps":   http_eps,
+        "ssh_eps":    ssh_eps,
+    })
