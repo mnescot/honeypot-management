@@ -331,6 +331,18 @@ resource "aws_security_group_rule" "hp_ldap" {
   ipv6_cidr_blocks  = ["::/0"]
 }
 
+# HTTPS / Citrix honeypot (CitrixHoneypot)
+resource "aws_security_group_rule" "hp_citrix" {
+  security_group_id = aws_security_group.tpot.id
+  type              = "ingress"
+  description       = "Honeypot - HTTPS/Citrix (CitrixHoneypot)"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  ipv6_cidr_blocks  = ["::/0"]
+}
+
 # ---------------------------------------------------------------------------
 # Beelzebub LLM honeypot ports
 # Beelzebub runs as a host service alongside T-Pot.  Cowrie occupies port 22

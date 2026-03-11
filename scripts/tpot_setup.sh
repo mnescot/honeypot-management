@@ -346,11 +346,36 @@ cat > "${COMPOSE_DIR}/docker-compose.override.yml" << 'OVERRIDE'
 # NOTE: Do NOT override nginx ports here.  Docker Compose APPENDS to the
 # existing ports list rather than replacing it, which would create a duplicate
 # host-port 64297 binding conflict and prevent the nginx container from starting.
-services: {}
+services:
+  citrixhoneypot:
+    container_name: citrixhoneypot
+    restart: always
+    depends_on:
+      tpotinit:
+        condition: service_healthy
+    networks:
+      - citrixhoneypot_local
+    ports:
+      - "443:443"
+    image: ${TPOT_REPO}/citrixhoneypot:${TPOT_VERSION}
+    pull_policy: ${TPOT_PULL_POLICY}
+    read_only: true
+    volumes:
+      - ${TPOT_DATA_PATH}/citrixhoneypot/log:/opt/citrixhoneypot/logs
+
+networks:
+  citrixhoneypot_local:
+    driver: bridge
 OVERRIDE
 
 chown tsec:tsec "${COMPOSE_DIR}/docker-compose.override.yml"
 log "docker-compose.override.yml written to ${COMPOSE_DIR}"
+
+# Pre-create the citrixhoneypot log directory (tpotinit may not know about
+# services added via override; container runs as UID 2000).
+mkdir -p /data/citrixhoneypot/log
+chown 2000:2000 /data/citrixhoneypot/log
+log "citrixhoneypot log directory created"
 
 # ---------------------------------------------------------------------------
 # Phase 8: Install oauth2-proxy with SHA256 verification
