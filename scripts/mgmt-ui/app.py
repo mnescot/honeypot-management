@@ -53,13 +53,13 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # ---------------------------------------------------------------------------
 
 def _docker() -> docker_sdk.DockerClient:
-    return docker_sdk.from_env()
+    return docker_sdk.from_env(timeout=10)
 
 
 def _docker_ok() -> tuple[bool, str]:
     """Return (True, "") if Docker daemon is reachable, else (False, error)."""
     try:
-        _docker().ping()
+        docker_sdk.from_env(timeout=3).ping()
         return True, ""
     except Exception as exc:
         return False, str(exc)
