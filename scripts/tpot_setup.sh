@@ -375,10 +375,49 @@ log "docker-compose.override.yml written to ${COMPOSE_DIR}"
 # Docker Compose APPENDS to port lists in overrides, so we cannot remove a
 # port via docker-compose.override.yml.  Instead we patch the base file
 # directly: citrixhoneypot owns port 443; honeytrap should not bind it.
+#
+# NOTE: plain `sed -i '/"443:443"/d'` was used previously.  When 443:443 is
+# the ONLY entry in a service's ports: list, deleting that line leaves
+# `ports:` with a null value (not an empty array), which Docker Compose
+# rejects with "must be a array".  The Python script below handles this by
+# replacing an empty ports: block with `ports: []`.
 COMPOSE_BASE="${COMPOSE_DIR}/docker-compose.yml"
 if [ -f "${COMPOSE_BASE}" ]; then
   if grep -q '"443:443"' "${COMPOSE_BASE}"; then
-    sed -i '/"443:443"/d' "${COMPOSE_BASE}"
+    _PATCH=$(mktemp)
+    cat > "${_PATCH}" << 'PYPATCH'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+
+out = []
+for i, line in enumerate(lines):
+    if '"443:443"' in line:
+        # Omit this line.  If it was the last item in a ports: block,
+        # the block is now empty — find the ports: line and turn it into
+        # `ports: []` so Docker Compose gets a valid empty array.
+        for j in range(len(out) - 1, -1, -1):
+            if out[j].strip() == 'ports:':
+                next_i = i + 1
+                while next_i < len(lines) and not lines[next_i].strip():
+                    next_i += 1
+                if next_i >= len(lines) or not lines[next_i].lstrip().startswith('-'):
+                    indent = len(out[j]) - len(out[j].lstrip())
+                    out[j] = ' ' * indent + 'ports: []\n'
+                break
+            elif out[j].strip():
+                break
+    else:
+        out.append(line)
+
+with open(path, 'w') as f:
+    f.writelines(out)
+print("Patched: removed 443:443 from {}".format(path))
+PYPATCH
+    python3 "${_PATCH}" "${COMPOSE_BASE}"
+    rm -f "${_PATCH}"
     log "Removed port 443:443 from base compose (honeytrap conflict resolved)"
   else
     log "Port 443:443 not found in base compose — no patch needed"
