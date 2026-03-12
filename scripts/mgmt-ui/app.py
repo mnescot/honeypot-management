@@ -7,6 +7,7 @@ All routes carry the /manage prefix so nginx proxies without rewriting.
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 import yaml
 import httpx
@@ -16,6 +17,9 @@ from typing import Any
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+log = logging.getLogger("honeypot-mgmt")
+logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -52,19 +56,33 @@ def _docker() -> docker_sdk.DockerClient:
     return docker_sdk.from_env()
 
 
+def _docker_ok() -> tuple[bool, str]:
+    """Return (True, "") if Docker daemon is reachable, else (False, error)."""
+    try:
+        _docker().ping()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
 def list_containers() -> list[dict[str, Any]]:
     try:
         rows = []
         for c in _docker().containers.list(all=True):
+            try:
+                image = c.image.tags[0] if c.image.tags else c.image.short_id
+            except Exception:
+                image = "<unknown>"
             rows.append({
                 "name":    c.name,
-                "image":   c.image.tags[0] if c.image.tags else c.image.short_id,
+                "image":   image,
                 "status":  c.status,
                 "running": c.status == "running",
                 "infra":   _is_infra(c.name),
             })
         return sorted(rows, key=lambda x: (x["infra"], x["name"]))
-    except Exception:
+    except Exception as exc:
+        log.error("list_containers failed: %s", exc, exc_info=True)
         return []
 
 
@@ -95,13 +113,16 @@ def read_file(path: Path) -> str:
 @app.get(PREFIX, response_class=HTMLResponse)
 @app.get(PREFIX + "/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    docker_ok, docker_err = _docker_ok()
     return templates.TemplateResponse("index.html", {
-        "request":     request,
-        "prefix":      PREFIX,
-        "containers":  list_containers(),
-        "bzb_active":  service_active(BEELZEBUB_SERVICE),
-        "ollama_active": service_active("ollama"),
-        "models":      await ollama_models(),
+        "request":        request,
+        "prefix":         PREFIX,
+        "containers":     list_containers() if docker_ok else [],
+        "docker_ok":      docker_ok,
+        "docker_err":     docker_err,
+        "bzb_active":     service_active(BEELZEBUB_SERVICE),
+        "ollama_active":  service_active("ollama"),
+        "models":         await ollama_models(),
     })
 
 

@@ -91,7 +91,11 @@
         </tr>
         {% else %}
         <tr><td colspan="5" class="text-center text-muted p-3">
-          No containers found — is Docker accessible?
+          {% if not docker_ok %}
+            Docker error: <code class="text-warning">{{ docker_err }}</code>
+          {% else %}
+            No containers found.
+          {% endif %}
         </td></tr>
         {% endfor %}
       </tbody>
