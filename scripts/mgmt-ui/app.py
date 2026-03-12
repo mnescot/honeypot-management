@@ -7,6 +7,7 @@ All routes carry the /manage prefix so nginx proxies without rewriting.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 import yaml
@@ -113,16 +114,27 @@ def read_file(path: Path) -> str:
 @app.get(PREFIX, response_class=HTMLResponse)
 @app.get(PREFIX + "/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    docker_ok, docker_err = _docker_ok()
+    # All Docker and subprocess calls are blocking I/O — run them in a thread
+    # pool so they never block the uvicorn event loop.  Without this, a slow
+    # Docker daemon (e.g. T-Pot is busy) causes every dashboard request to
+    # stall the event loop for the full timeout, queuing up subsequent requests
+    # until nginx gives up with 504.
+    docker_ok, docker_err = await asyncio.to_thread(_docker_ok)
+    containers, bzb, ollama_up, models = await asyncio.gather(
+        asyncio.to_thread(list_containers) if docker_ok else asyncio.sleep(0, result=[]),
+        asyncio.to_thread(service_active, BEELZEBUB_SERVICE),
+        asyncio.to_thread(service_active, "ollama"),
+        ollama_models(),
+    )
     return templates.TemplateResponse("index.html", {
         "request":        request,
         "prefix":         PREFIX,
-        "containers":     list_containers() if docker_ok else [],
+        "containers":     containers,
         "docker_ok":      docker_ok,
         "docker_err":     docker_err,
-        "bzb_active":     service_active(BEELZEBUB_SERVICE),
-        "ollama_active":  service_active("ollama"),
-        "models":         await ollama_models(),
+        "bzb_active":     bzb,
+        "ollama_active":  ollama_up,
+        "models":         models,
     })
 
 
