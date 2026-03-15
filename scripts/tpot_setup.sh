@@ -969,15 +969,22 @@ log "=== Phase 12: iptables ==="
 iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
 log "iptables rule applied (current session)"
 
-# Persist only this rule across reboots via a dedicated service
+# Persist these rules across reboots via a dedicated service.
+# Port 4180 (oauth2-proxy / ALB backend): T-Pot's tpotinit container runs
+# rules.sh on every compose up, which adds ACCEPT rules for known honeypot
+# ports and a catch-all NFQUEUE rule for everything else.  Port 4180 is not
+# in T-Pot's list, so SYNs from the ALB are silently queued and dropped.
+# Using iptables -I (insert at top) ensures the ACCEPT lands before NFQUEUE
+# regardless of whether this service runs before or after tpotinit.
 cat > /etc/systemd/system/tpot-iptables.service << 'IPTABLES_UNIT'
 [Unit]
-Description=T-Pot iptables: restrict port 64297 to loopback only
+Description=T-Pot iptables: restrict port 64297 to loopback; allow port 4180 from ALB
 After=network.target docker.service
 
 [Service]
 Type=oneshot
 ExecStart=/sbin/iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
+ExecStart=/sbin/iptables -I INPUT -p tcp --dport 4180 -j ACCEPT
 RemainAfterExit=yes
 
 [Install]
