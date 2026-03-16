@@ -142,10 +142,36 @@ async def dashboard(request: Request):
 # Routes — Container management
 # ---------------------------------------------------------------------------
 
+def _start_container(name: str) -> None:
+    _docker().containers.get(name).start()
+
+
+def _stop_container(name: str) -> None:
+    _docker().containers.get(name).stop(timeout=10)
+
+
+def _stop_all_honeypots() -> None:
+    for c in _docker().containers.list():
+        if not _is_infra(c.name):
+            try:
+                c.stop(timeout=10)
+            except Exception:
+                pass
+
+
+def _start_all_honeypots() -> None:
+    for c in _docker().containers.list(all=True):
+        if not _is_infra(c.name) and c.status != "running":
+            try:
+                c.start()
+            except Exception:
+                pass
+
+
 @app.post(PREFIX + "/container/{name}/start")
 async def start_container(name: str):
     try:
-        _docker().containers.get(name).start()
+        await asyncio.to_thread(_start_container, name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return RedirectResponse(PREFIX + "/", status_code=303)
@@ -154,7 +180,7 @@ async def start_container(name: str):
 @app.post(PREFIX + "/container/{name}/stop")
 async def stop_container(name: str):
     try:
-        _docker().containers.get(name).stop(timeout=10)
+        await asyncio.to_thread(_stop_container, name)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return RedirectResponse(PREFIX + "/", status_code=303)
@@ -163,26 +189,14 @@ async def stop_container(name: str):
 @app.post(PREFIX + "/containers/stop-all")
 async def stop_all_honeypots():
     """Stop every running honeypot container (leaves infra containers untouched)."""
-    client = _docker()
-    for c in client.containers.list():
-        if not _is_infra(c.name):
-            try:
-                c.stop(timeout=10)
-            except Exception:
-                pass
+    await asyncio.to_thread(_stop_all_honeypots)
     return RedirectResponse(PREFIX + "/", status_code=303)
 
 
 @app.post(PREFIX + "/containers/start-all")
 async def start_all_honeypots():
     """Start every stopped honeypot container."""
-    client = _docker()
-    for c in client.containers.list(all=True):
-        if not _is_infra(c.name) and c.status != "running":
-            try:
-                c.start()
-            except Exception:
-                pass
+    await asyncio.to_thread(_start_all_honeypots)
     return RedirectResponse(PREFIX + "/", status_code=303)
 
 
@@ -192,13 +206,19 @@ async def start_all_honeypots():
 
 @app.get(PREFIX + "/beelzebub", response_class=HTMLResponse)
 async def beelzebub_page(request: Request, saved: str = "", error: str = ""):
+    active, main_cfg, ssh_cfg, http_cfg = await asyncio.gather(
+        asyncio.to_thread(service_active, BEELZEBUB_SERVICE),
+        asyncio.to_thread(read_file, BEELZEBUB_CFG),
+        asyncio.to_thread(read_file, BEELZEBUB_SSH_CFG),
+        asyncio.to_thread(read_file, BEELZEBUB_HTTP_CFG),
+    )
     return templates.TemplateResponse("beelzebub.html", {
         "request":     request,
         "prefix":      PREFIX,
-        "active":      service_active(BEELZEBUB_SERVICE),
-        "main_cfg":    read_file(BEELZEBUB_CFG),
-        "ssh_cfg":     read_file(BEELZEBUB_SSH_CFG),
-        "http_cfg":    read_file(BEELZEBUB_HTTP_CFG),
+        "active":      active,
+        "main_cfg":    main_cfg,
+        "ssh_cfg":     ssh_cfg,
+        "http_cfg":    http_cfg,
         "saved":       bool(saved),
         "error":       error,
     })
@@ -223,16 +243,20 @@ async def save_beelzebub(
         return RedirectResponse(
             f"{PREFIX}/beelzebub?error={str(e)[:80]}", status_code=303
         )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(config_body)
-    subprocess.run(["systemctl", "restart", BEELZEBUB_SERVICE], check=False)
+    def _write_and_restart() -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(config_body)
+        subprocess.run(["systemctl", "restart", BEELZEBUB_SERVICE], check=False)
+    await asyncio.to_thread(_write_and_restart)
     return RedirectResponse(PREFIX + "/beelzebub?saved=1", status_code=303)
 
 
 @app.post(PREFIX + "/beelzebub/toggle")
 async def toggle_beelzebub():
-    action = "stop" if service_active(BEELZEBUB_SERVICE) else "start"
-    subprocess.run(["systemctl", action, BEELZEBUB_SERVICE], check=False)
+    def _toggle() -> None:
+        action = "stop" if service_active(BEELZEBUB_SERVICE) else "start"
+        subprocess.run(["systemctl", action, BEELZEBUB_SERVICE], check=False)
+    await asyncio.to_thread(_toggle)
     return RedirectResponse(PREFIX + "/beelzebub", status_code=303)
 
 
@@ -242,11 +266,15 @@ async def toggle_beelzebub():
 
 @app.get(PREFIX + "/ollama", response_class=HTMLResponse)
 async def ollama_page(request: Request, pulling: str = ""):
+    active, models = await asyncio.gather(
+        asyncio.to_thread(service_active, "ollama"),
+        ollama_models(),
+    )
     return templates.TemplateResponse("ollama.html", {
         "request":  request,
         "prefix":   PREFIX,
-        "active":   service_active("ollama"),
-        "models":   await ollama_models(),
+        "active":   active,
+        "models":   models,
         "pulling":  bool(pulling),
     })
 
@@ -263,7 +291,7 @@ async def pull_model(model: str = Form(...)):
 
 @app.post(PREFIX + "/ollama/delete")
 async def delete_model(model: str = Form(...)):
-    subprocess.run(["ollama", "rm", model.strip()], check=False)
+    await asyncio.to_thread(subprocess.run, ["ollama", "rm", model.strip()], check=False)
     return RedirectResponse(PREFIX + "/ollama", status_code=303)
 
 
