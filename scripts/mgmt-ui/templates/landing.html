@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fred Hutch Honeypot Management</title>
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      --fh-navy:    #1A1446;
+      --fh-navy-2:  #2A1F6A;
+      --fh-teal:    #00A3BF;
+      --fh-orange:  #EE9B33;
+      --fh-bg:      #FFFFFF;
+      --fh-surface: #F7F8FA;
+      --fh-border:  #E5E7EB;
+      --fh-text:    #1F2937;
+      --fh-muted:   #6B7280;
+    }
+    html, body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: var(--fh-bg);
+      color: var(--fh-text);
+      font-size: 15px;
+      letter-spacing: -0.005em;
+      margin: 0;
+    }
+
+    /* Header banner */
+    .fh-banner {
+      background-color: var(--fh-navy);
+      color: #fff;
+      padding: 2.5rem 0 2rem;
+      border-bottom: 3px solid var(--fh-teal);
+    }
+    .fh-banner .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--fh-orange);
+      margin-bottom: 0.75rem;
+    }
+    .fh-banner h1 {
+      color: #fff;
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.4rem;
+    }
+    .fh-banner p {
+      color: rgba(255,255,255,0.75);
+      max-width: 720px;
+      font-size: 0.98rem;
+      margin: 0;
+    }
+
+    /* Section */
+    .section-title {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--fh-muted);
+      font-weight: 600;
+      margin: 2rem 0 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--fh-border);
+    }
+
+    /* Tool cards */
+    .tool-card {
+      display: block;
+      background: var(--fh-bg);
+      border: 1px solid var(--fh-border);
+      border-radius: 4px;
+      padding: 1.25rem 1.25rem 1.1rem;
+      height: 100%;
+      color: var(--fh-text);
+      text-decoration: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    }
+    .tool-card:hover {
+      border-color: var(--fh-teal);
+      box-shadow: 0 2px 10px rgba(26,20,70,0.06);
+      color: var(--fh-text);
+      transform: translateY(-1px);
+    }
+    .tool-card .tool-title {
+      color: var(--fh-navy);
+      font-weight: 600;
+      font-size: 1rem;
+      margin-bottom: 0.3rem;
+      letter-spacing: -0.01em;
+    }
+    .tool-card .tool-desc {
+      color: var(--fh-muted);
+      font-size: 0.88rem;
+      line-height: 1.4;
+      margin: 0;
+    }
+    .tool-card .tool-link {
+      color: var(--fh-teal);
+      font-size: 0.82rem;
+      font-weight: 500;
+      margin-top: 0.7rem;
+      display: inline-block;
+    }
+
+    /* Featured (Management) card */
+    .tool-card.featured {
+      background: linear-gradient(135deg, var(--fh-navy) 0%, var(--fh-navy-2) 100%);
+      border-color: var(--fh-navy);
+      color: #fff;
+    }
+    .tool-card.featured:hover {
+      border-color: var(--fh-orange);
+      box-shadow: 0 4px 16px rgba(26,20,70,0.25);
+    }
+    .tool-card.featured .tool-title { color: #fff; }
+    .tool-card.featured .tool-desc  { color: rgba(255,255,255,0.78); }
+    .tool-card.featured .tool-link  { color: var(--fh-orange); }
+
+    .footer {
+      margin-top: 3rem;
+      padding: 1.5rem 0;
+      border-top: 1px solid var(--fh-border);
+      color: var(--fh-muted);
+      font-size: 0.82rem;
+    }
+  </style>
+</head>
+<body>
+<div class="fh-banner">
+  <div class="container">
+    <div class="eyebrow">Fred Hutchinson Cancer Center · Security Operations</div>
+    <h1>Honeypot Management</h1>
+    <p>Deception infrastructure and threat telemetry. Access analysis tools,
+       review attack activity, and manage the honeypot fleet.</p>
+  </div>
+</div>
+
+<div class="container">
+  <div class="section-title">Administration</div>
+  <div class="row g-3">
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card featured" href="/manage/">
+        <div class="tool-title">Management Console</div>
+        <p class="tool-desc">Configure honeypots, manage the remote node fleet,
+           deploy Beelzebub personas, and administer Ollama models.</p>
+        <span class="tool-link">Open console →</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="section-title">Analysis &amp; Visualisation</div>
+  <div class="row g-3">
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card" href="/kibana/" target="_blank" rel="noopener">
+        <div class="tool-title">Kibana</div>
+        <p class="tool-desc">Dashboards and ad-hoc search across attack events,
+           honeypot logs, and Suricata alerts.</p>
+        <span class="tool-link">Open Kibana →</span>
+      </a>
+    </div>
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card" href="/map/" target="_blank" rel="noopener">
+        <div class="tool-title">Attack Map</div>
+        <p class="tool-desc">Live geographic view of incoming attacks across
+           the entire fleet, central and remote nodes.</p>
+        <span class="tool-link">Open Attack Map →</span>
+      </a>
+    </div>
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card" href="/spiderfoot/" target="_blank" rel="noopener">
+        <div class="tool-title">SpiderFoot</div>
+        <p class="tool-desc">Open-source intelligence and reconnaissance on
+           observed source IPs and domains.</p>
+        <span class="tool-link">Open SpiderFoot →</span>
+      </a>
+    </div>
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card" href="/cyberchef/" target="_blank" rel="noopener">
+        <div class="tool-title">CyberChef</div>
+        <p class="tool-desc">Decode, transform, and analyse captured payloads
+           with the classic "Swiss army knife".</p>
+        <span class="tool-link">Open CyberChef →</span>
+      </a>
+    </div>
+    <div class="col-md-6 col-lg-4">
+      <a class="tool-card" href="/elasticvue/" target="_blank" rel="noopener">
+        <div class="tool-title">Elasticvue</div>
+        <p class="tool-desc">Low-level Elasticsearch index explorer for
+           validating ingest pipelines and event schema.</p>
+        <span class="tool-link">Open Elasticvue →</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="footer">
+    Operated by Fred Hutchinson Cancer Center Security Operations.
+    Powered by T-Pot Community Edition.
+  </div>
+</div>
+</body>
+</html>

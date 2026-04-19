@@ -1,38 +1,220 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}T-Pot Management{% endblock %}</title>
+  <title>{% block title %}Fred Hutch Honeypot Management{% endblock %}</title>
   <link rel="stylesheet"
         href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <style>
-    body            { background-color: #0d1117; }
-    .card           { background-color: #161b22; border-color: #30363d; }
-    .navbar         { background-color: #161b22 !important; border-bottom: 1px solid #30363d; }
-    .table          { --bs-table-bg: transparent; --bs-table-border-color: #30363d; }
-    .badge-running  { background-color: #238636; }
-    .badge-stopped  { background-color: #6e7681; }
-    .badge-infra    { background-color: #1f6feb; }
-    textarea.cfg    { font-family: monospace; font-size: 0.82rem; background-color: #0d1117;
-                      color: #e6edf3; border-color: #30363d; }
-    .nav-link.active { color: #fff !important; border-bottom: 2px solid #58a6ff; }
+    :root {
+      --fh-navy:    #1A1446;
+      --fh-navy-2:  #2A1F6A;
+      --fh-teal:    #00A3BF;
+      --fh-orange:  #EE9B33;
+      --fh-bg:      #FFFFFF;
+      --fh-surface: #F7F8FA;
+      --fh-border:  #E5E7EB;
+      --fh-text:    #1F2937;
+      --fh-muted:   #6B7280;
+      --fh-success: #2E7D32;
+      --fh-warn:    #B26A00;
+      --fh-danger:  #B3261E;
+    }
+    html, body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background-color: var(--fh-bg);
+      color: var(--fh-text);
+      font-size: 15px;
+      letter-spacing: -0.005em;
+    }
+    h1, h2, h3, h4, h5, h6 { letter-spacing: -0.015em; color: var(--fh-navy); }
+
+    /* Navbar */
+    .fh-navbar {
+      background-color: var(--fh-navy);
+      border-bottom: 3px solid var(--fh-teal);
+      padding: 0.75rem 0;
+    }
+    .fh-navbar .navbar-brand {
+      color: #fff !important;
+      font-weight: 700;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
+    }
+    .fh-navbar .navbar-brand .brand-accent {
+      color: var(--fh-orange);
+      font-weight: 400;
+      margin-left: 0.4rem;
+      padding-left: 0.6rem;
+      border-left: 1px solid rgba(255,255,255,0.25);
+    }
+    .fh-navbar .nav-link {
+      color: rgba(255,255,255,0.78) !important;
+      font-weight: 500;
+      font-size: 0.92rem;
+      padding: 0.35rem 0.9rem !important;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .fh-navbar .nav-link:hover { color: #fff !important; }
+    .fh-navbar .nav-link.active {
+      color: #fff !important;
+      border-bottom-color: var(--fh-orange);
+    }
+
+    /* Cards */
+    .card {
+      background-color: var(--fh-bg);
+      border: 1px solid var(--fh-border);
+      border-radius: 4px;
+      box-shadow: none;
+    }
+    .card-header {
+      background-color: var(--fh-surface);
+      border-bottom: 1px solid var(--fh-border);
+      font-weight: 600;
+      color: var(--fh-navy);
+    }
+
+    /* Tables */
+    .table {
+      --bs-table-bg: transparent;
+      --bs-table-border-color: var(--fh-border);
+      color: var(--fh-text);
+    }
+    .table thead th {
+      font-weight: 600;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--fh-muted);
+      border-bottom: 1px solid var(--fh-border);
+    }
+
+    /* Badges — flat, business-like */
+    .badge {
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      border-radius: 2px;
+      padding: 0.32em 0.6em;
+    }
+    .badge-running  { background-color: #E8F5E9; color: var(--fh-success);
+                      border: 1px solid #C8E6C9; }
+    .badge-stopped  { background-color: #F3F4F6; color: var(--fh-muted);
+                      border: 1px solid var(--fh-border); }
+    .badge-infra    { background-color: #E3F2FD; color: #0D47A1;
+                      border: 1px solid #BBDEFB; }
+
+    /* Buttons */
+    .btn { border-radius: 3px; font-weight: 500; letter-spacing: 0.005em; }
+    .btn-primary {
+      background-color: var(--fh-navy);
+      border-color: var(--fh-navy);
+    }
+    .btn-primary:hover, .btn-primary:focus {
+      background-color: var(--fh-navy-2);
+      border-color: var(--fh-navy-2);
+    }
+    .btn-outline-primary {
+      color: var(--fh-navy);
+      border-color: var(--fh-navy);
+    }
+    .btn-outline-primary:hover {
+      background-color: var(--fh-navy);
+      border-color: var(--fh-navy);
+    }
+    .btn-accent {
+      background-color: var(--fh-teal);
+      border-color: var(--fh-teal);
+      color: #fff;
+    }
+    .btn-accent:hover {
+      background-color: #008BA3;
+      border-color: #008BA3;
+      color: #fff;
+    }
+
+    /* Forms */
+    .form-control, .form-select {
+      border-color: var(--fh-border);
+      border-radius: 3px;
+      color: var(--fh-text);
+    }
+    .form-control:focus, .form-select:focus {
+      border-color: var(--fh-teal);
+      box-shadow: 0 0 0 0.15rem rgba(0,163,191,0.18);
+    }
+    textarea.cfg {
+      font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+      font-size: 0.82rem;
+      background-color: var(--fh-surface);
+      color: var(--fh-text);
+      border-color: var(--fh-border);
+    }
+
+    /* Tabs */
+    .nav-tabs { border-bottom: 1px solid var(--fh-border); }
+    .nav-tabs .nav-link {
+      color: var(--fh-muted);
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      font-weight: 500;
+    }
+    .nav-tabs .nav-link:hover { color: var(--fh-navy); }
+    .nav-tabs .nav-link.active {
+      color: var(--fh-navy);
+      background: transparent;
+      border-bottom-color: var(--fh-teal);
+    }
+
+    /* Utility */
+    .text-muted { color: var(--fh-muted) !important; }
+    .text-success { color: var(--fh-success) !important; }
+    .text-secondary { color: var(--fh-muted) !important; }
+    code { color: var(--fh-navy); background-color: var(--fh-surface); padding: 0.1em 0.3em;
+           border-radius: 2px; font-size: 0.88em; }
+    a { color: var(--fh-navy); text-decoration: none; }
+    a:hover { color: var(--fh-teal); }
+
+    /* Section heading under navbar */
+    .page-title {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--fh-navy);
+      margin-bottom: 0.25rem;
+    }
+    .page-subtitle {
+      color: var(--fh-muted);
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
   </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+<nav class="navbar navbar-expand-lg fh-navbar mb-4">
   <div class="container-fluid px-4">
-    <span class="navbar-brand fw-bold text-white">T-Pot Management</span>
-    <div class="navbar-nav ms-auto flex-row gap-3">
+    <span class="navbar-brand">
+      Fred Hutch<span class="brand-accent">Honeypot Management</span>
+    </span>
+    <div class="navbar-nav ms-auto flex-row gap-1">
       <a class="nav-link {% block nav_dash %}{% endblock %}"
          href="{{ prefix }}/">Dashboard</a>
+      <a class="nav-link {% block nav_nodes %}{% endblock %}"
+         href="{{ prefix }}/nodes">Nodes</a>
       <a class="nav-link {% block nav_bzb %}{% endblock %}"
          href="{{ prefix }}/beelzebub">Beelzebub</a>
       <a class="nav-link {% block nav_ollama %}{% endblock %}"
          href="{{ prefix }}/ollama">Ollama</a>
       <a class="nav-link {% block nav_redteam %}{% endblock %}"
          href="{{ prefix }}/redteam">Red Team</a>
-      <a class="nav-link" href="/" target="_blank">T-Pot UI</a>
+      <a class="nav-link" href="/">Home</a>
     </div>
   </div>
 </nav>

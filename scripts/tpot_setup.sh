@@ -526,6 +526,19 @@ server {
         proxy_read_timeout  60s;
     }
 
+    # Fred Hutch landing page — exact-match root only.
+    # Replaces the default T-Pot landing page; other T-Pot paths
+    # (/kibana/, /map/, /spiderfoot/, /cyberchef/, /elasticvue/, static
+    # assets) continue to flow through the catch-all `location /` below.
+    location = / {
+        proxy_pass          http://127.0.0.1:8889/;
+        proxy_http_version  1.1;
+        proxy_set_header    Host            \$host;
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout  30s;
+    }
+
     # Remote-node agent API — same FastAPI upstream, no Basic Auth injection.
     # oauth2-proxy is configured to skip OIDC on these paths; FastAPI
     # authenticates via the agent bearer token issued at enrolment.

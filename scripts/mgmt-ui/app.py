@@ -122,6 +122,14 @@ async def _shutdown() -> None:
 app.include_router(agent_router)
 
 
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def landing(request: Request):
+    """Fred Hutch landing page. Served by nginx at exact match `/`, routed
+    here instead of the upstream T-Pot nginx. All other paths still flow to
+    T-Pot nginx via the catch-all `location /` block."""
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+
 def _fqdn_url() -> str:
     fqdn = os.environ.get("TPOT_FQDN", "")
     if not fqdn:
