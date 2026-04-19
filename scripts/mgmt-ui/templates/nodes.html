@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Remote Nodes · Fred Hutch Honeypot Management{% endblock %}
+{% block nav_nodes %}active{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="text-white m-0">Remote Nodes</h3>
+  <form method="get" action="{{ prefix }}/nodes/new">
+    <button class="btn btn-primary" type="submit">Add Node</button>
+  </form>
+</div>
+
+{% if fresh_token %}
+<div class="card mb-4 border-info">
+  <div class="card-header bg-info text-dark fw-bold">Enrolment token — copy now, shown once</div>
+  <div class="card-body">
+    <p class="text-muted small mb-2">Run this on the remote Linux host (as root). Single-use, expires in 15 minutes.</p>
+    <pre class="p-2 rounded" style="background:#0d1117;color:#e6edf3;overflow-x:auto;">curl -fsSL {{ server_url }}/api/v1/agent/bootstrap/{{ fresh_token }} | sudo bash</pre>
+    <p class="text-muted small mt-2 mb-0">Label: <code>{{ fresh_label }}</code></p>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-body p-0">
+    <table class="table mb-0 align-middle">
+      <thead>
+        <tr>
+          <th>Label</th><th>Hostname</th><th>Public IP</th><th>Last seen</th><th>Status</th><th>Agent</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for n in nodes %}
+        <tr>
+          <td><a href="{{ prefix }}/nodes/{{ n.id }}" class="text-info">{{ n.label }}</a></td>
+          <td class="text-muted"><code>{{ n.hostname or '—' }}</code></td>
+          <td class="text-muted"><code>{{ n.public_ip or '—' }}</code></td>
+          <td class="text-muted small">{{ n.last_seen or 'never' }}</td>
+          <td>
+            {% if n.revoked_at %}
+              <span class="badge text-bg-dark">revoked</span>
+            {% elif n.status == 'online' %}
+              <span class="badge badge-running">online</span>
+            {% elif n.status == 'degraded' %}
+              <span class="badge text-bg-warning">degraded</span>
+            {% else %}
+              <span class="badge badge-stopped">offline</span>
+            {% endif %}
+          </td>
+          <td class="text-muted small">{{ n.agent_version or '—' }}</td>
+          <td class="text-end">
+            {% if not n.revoked_at %}
+            <form method="post" action="{{ prefix }}/nodes/{{ n.id }}/revoke" class="d-inline"
+                  onsubmit="return confirm('Revoke token and stop honeypots on {{ n.label }}?');">
+              <button class="btn btn-sm btn-outline-danger">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">No remote nodes registered. Click <strong>Add Node</strong> to onboard one.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

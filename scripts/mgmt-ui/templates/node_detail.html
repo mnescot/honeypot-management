@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}{{ node.label }} · Remote Nodes{% endblock %}
+{% block nav_nodes %}active{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb mb-0">
+    <li class="breadcrumb-item"><a href="{{ prefix }}/nodes" class="text-info">Nodes</a></li>
+    <li class="breadcrumb-item active text-muted" aria-current="page">{{ node.label }}</li>
+  </ol>
+</nav>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <h6 class="text-muted">Status</h6>
+      {% if node.revoked_at %}
+        <span class="badge text-bg-dark fs-6">revoked</span>
+      {% elif node.status == 'online' %}
+        <span class="badge badge-running fs-6">online</span>
+      {% elif node.status == 'degraded' %}
+        <span class="badge text-bg-warning fs-6">degraded</span>
+      {% else %}
+        <span class="badge badge-stopped fs-6">offline</span>
+      {% endif %}
+      <div class="small text-muted mt-2">
+        Last seen: {{ node.last_seen or '—' }}<br>
+        Enrolled: {{ node.enrolled_at or '—' }}
+      </div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <h6 class="text-muted">Host</h6>
+      <div class="small"><code>{{ node.hostname or '—' }}</code></div>
+      <div class="small"><code>{{ node.public_ip or '—' }}</code></div>
+      <div class="small text-muted">{{ node.os_id }} {{ node.os_version }}</div>
+      <div class="small text-muted">agent {{ node.agent_version or '—' }}</div>
+    </div></div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100"><div class="card-body">
+      <h6 class="text-muted">Actions</h6>
+      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/deploy-beelzebub" class="d-inline">
+        <button class="btn btn-sm btn-primary mb-1" {% if node.revoked_at %}disabled{% endif %}>Deploy Beelzebub</button>
+      </form>
+      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/stop-beelzebub" class="d-inline">
+        <button class="btn btn-sm btn-outline-secondary mb-1" {% if node.revoked_at %}disabled{% endif %}>Stop</button>
+      </form>
+      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/ping" class="d-inline">
+        <button class="btn btn-sm btn-outline-info mb-1" {% if node.revoked_at %}disabled{% endif %}>Ping</button>
+      </form>
+      {% if not node.revoked_at %}
+      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/revoke" class="d-inline"
+            onsubmit="return confirm('Revoke and stop honeypots on {{ node.label }}?');">
+        <button class="btn btn-sm btn-outline-danger mb-1">Revoke</button>
+      </form>
+      {% endif %}
+    </div></div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header text-white">Command history</div>
+  <div class="card-body p-0">
+    <table class="table mb-0 align-middle">
+      <thead><tr><th>Type</th><th>Created</th><th>Delivered</th><th>Acked</th><th>Result</th></tr></thead>
+      <tbody>
+        {% for c in commands %}
+        <tr>
+          <td><code>{{ c.type }}</code></td>
+          <td class="small text-muted">{{ c.created_at }}</td>
+          <td class="small text-muted">{{ c.delivered_at or '—' }}</td>
+          <td class="small text-muted">{{ c.ack_at or '—' }}</td>
+          <td>
+            {% if c.ack_status == 'ok' %}<span class="badge badge-running">ok</span>
+            {% elif c.ack_status %}<span class="badge text-bg-danger">{{ c.ack_status }}</span>
+            {% else %}<span class="badge badge-stopped">pending</span>{% endif %}
+            {% if c.ack_output %}<code class="small text-muted d-block">{{ c.ack_output[:120] }}</code>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-3">No commands yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

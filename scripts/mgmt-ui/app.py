@@ -9,15 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import yaml
 import httpx
 import docker as docker_sdk
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+import db as db_module
+from db import utcnow
+from agent_api import router as agent_router, create_enrolment_token, queue_command
 
 log = logging.getLogger("honeypot-mgmt")
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +53,88 @@ def _is_infra(name: str) -> bool:
 
 app       = FastAPI(title="T-Pot Management UI", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Node health thresholds (seconds since last_seen).
+ONLINE_MAX_SEC   = 90       # 3× heartbeat
+DEGRADED_MAX_SEC = 300
+
+
+def _status_from_last_seen(last_seen: str | None) -> str:
+    if not last_seen:
+        return "offline"
+    try:
+        ts = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+    except ValueError:
+        return "offline"
+    delta = (datetime.now(timezone.utc) - ts).total_seconds()
+    if delta < ONLINE_MAX_SEC:
+        return "online"
+    if delta < DEGRADED_MAX_SEC:
+        return "degraded"
+    return "offline"
+
+
+async def _recompute_statuses_loop(app: FastAPI) -> None:
+    """Background task: refresh nodes.last_status so the dashboard and any
+    external consumers see up-to-date health without needing per-request
+    recomputation."""
+    while True:
+        try:
+            db = app.state.db
+            rows = await (await db.execute(
+                "SELECT id, last_seen, revoked_at FROM nodes"
+            )).fetchall()
+            for r in rows:
+                if r["revoked_at"]:
+                    continue
+                status = _status_from_last_seen(r["last_seen"])
+                await db.execute(
+                    "UPDATE nodes SET last_status = ? WHERE id = ?",
+                    (status, r["id"]),
+                )
+            await db.commit()
+        except Exception as exc:
+            log.warning("status recompute failed: %s", exc)
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    app.state.db = await db_module.connect()
+    app.state.http = httpx.AsyncClient(timeout=10)
+    app.state.bg_status = asyncio.create_task(_recompute_statuses_loop(app))
+    log.info("startup complete")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    task = getattr(app.state, "bg_status", None)
+    if task:
+        task.cancel()
+    http = getattr(app.state, "http", None)
+    if http:
+        await http.aclose()
+    db = getattr(app.state, "db", None)
+    if db:
+        await db.close()
+
+
+app.include_router(agent_router)
+
+
+def _fqdn_url() -> str:
+    fqdn = os.environ.get("TPOT_FQDN", "")
+    if not fqdn:
+        return ""
+    return fqdn if fqdn.startswith("http") else f"https://{fqdn}"
+
+
+def _admin_user(request: Request) -> str:
+    return (
+        request.headers.get("x-forwarded-user")
+        or request.headers.get("x-forwarded-email")
+        or "admin"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +424,132 @@ async def redteam_page(request: Request):
         "http_eps":   http_eps,
         "ssh_eps":    ssh_eps,
     })
+
+
+# ---------------------------------------------------------------------------
+# Routes — Remote nodes
+# ---------------------------------------------------------------------------
+
+def _node_view(row: dict) -> dict:
+    status = _status_from_last_seen(row["last_seen"]) if not row["revoked_at"] else "revoked"
+    return {**row, "status": status}
+
+
+@app.get(PREFIX + "/nodes", response_class=HTMLResponse)
+async def nodes_list(request: Request, token: str = "", label: str = ""):
+    db = request.app.state.db
+    rows = await (await db.execute(
+        """SELECT id, label, hostname, public_ip, os_id, os_version,
+                  agent_version, enrolled_at, last_seen, revoked_at
+             FROM nodes ORDER BY revoked_at IS NOT NULL, label"""
+    )).fetchall()
+    nodes = [_node_view(dict(r)) for r in rows]
+    return templates.TemplateResponse("nodes.html", {
+        "request":     request,
+        "prefix":      PREFIX,
+        "nodes":       nodes,
+        "server_url":  _fqdn_url() or str(request.base_url).rstrip("/"),
+        "fresh_token": token or None,
+        "fresh_label": label or None,
+    })
+
+
+@app.get(PREFIX + "/nodes/new", response_class=HTMLResponse)
+async def nodes_new_form(request: Request):
+    return templates.TemplateResponse("node_new.html", {
+        "request":    request,
+        "prefix":     PREFIX,
+        "server_url": _fqdn_url() or str(request.base_url).rstrip("/"),
+    })
+
+
+@app.post(PREFIX + "/nodes/new")
+async def nodes_new_submit(request: Request, label: str = Form(...)):
+    label = label.strip().lower()
+    if not label or len(label) > 32:
+        raise HTTPException(status_code=400, detail="invalid label")
+    db = request.app.state.db
+    token = await create_enrolment_token(db, label, _admin_user(request))
+    return RedirectResponse(
+        f"{PREFIX}/nodes?token={token}&label={label}",
+        status_code=303,
+    )
+
+
+@app.get(PREFIX + "/nodes/{node_id}", response_class=HTMLResponse)
+async def node_detail(request: Request, node_id: int):
+    db = request.app.state.db
+    row = await (await db.execute(
+        """SELECT id, label, hostname, public_ip, os_id, os_version,
+                  agent_version, enrolled_at, last_seen, revoked_at
+             FROM nodes WHERE id = ?""",
+        (node_id,),
+    )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown node")
+    node = _node_view(dict(row))
+    cmd_rows = await (await db.execute(
+        """SELECT id, type, created_at, delivered_at, ack_at, ack_status, ack_output
+             FROM commands WHERE node_id = ?
+             ORDER BY created_at DESC LIMIT 50""",
+        (node_id,),
+    )).fetchall()
+    return templates.TemplateResponse("node_detail.html", {
+        "request":  request,
+        "prefix":   PREFIX,
+        "node":     node,
+        "commands": [dict(c) for c in cmd_rows],
+    })
+
+
+async def _queue(db, node_id: int, cmd_type: str, payload: dict, user: str) -> str:
+    # Verify node exists and isn't revoked.
+    row = await (await db.execute(
+        "SELECT revoked_at FROM nodes WHERE id = ?", (node_id,),
+    )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown node")
+    if row["revoked_at"]:
+        raise HTTPException(status_code=409, detail="node revoked")
+    return await queue_command(db, node_id, cmd_type, payload, user)
+
+
+@app.post(PREFIX + "/nodes/{node_id}/deploy-beelzebub")
+async def deploy_beelzebub(request: Request, node_id: int):
+    await _queue(
+        request.app.state.db, node_id,
+        "install_beelzebub",
+        {"image": "mariocandela/beelzebub:latest"},
+        _admin_user(request),
+    )
+    return RedirectResponse(f"{PREFIX}/nodes/{node_id}", status_code=303)
+
+
+@app.post(PREFIX + "/nodes/{node_id}/stop-beelzebub")
+async def stop_beelzebub_remote(request: Request, node_id: int):
+    await _queue(
+        request.app.state.db, node_id,
+        "stop_honeypot", {"name": "beelzebub"},
+        _admin_user(request),
+    )
+    return RedirectResponse(f"{PREFIX}/nodes/{node_id}", status_code=303)
+
+
+@app.post(PREFIX + "/nodes/{node_id}/ping")
+async def ping_node(request: Request, node_id: int):
+    await _queue(
+        request.app.state.db, node_id,
+        "ping", {}, _admin_user(request),
+    )
+    return RedirectResponse(f"{PREFIX}/nodes/{node_id}", status_code=303)
+
+
+@app.post(PREFIX + "/nodes/{node_id}/revoke")
+async def revoke_node(request: Request, node_id: int):
+    db = request.app.state.db
+    await db.execute(
+        "UPDATE nodes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        (utcnow(), node_id),
+    )
+    await db.commit()
+    return RedirectResponse(f"{PREFIX}/nodes", status_code=303)

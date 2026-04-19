@@ -187,6 +187,26 @@ upload-scripts:
 
       echo "Management UI uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/mgmt-ui.tar.gz"
 
+    - |
+      # -----------------------------------------------------------------------
+      # Package the remote-node agent (scripts/agent/) as a tarball and upload
+      # to S3.  The central mgmt-ui serves it at /api/v1/agent/artefacts/
+      # for the bootstrap one-liner that runs on each remote Linux host.
+      # -----------------------------------------------------------------------
+      echo "Packaging remote-node agent..."
+      tar -czf /tmp/agent.tar.gz -C scripts agent
+      sha256sum /tmp/agent.tar.gz | awk '{print $1}' > /tmp/agent.tar.gz.sha256
+
+      aws s3 cp /tmp/agent.tar.gz \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/agent.tar.gz" \
+        --region "${TF_VAR_aws_region}" \
+        --metadata "commit-sha=${CI_COMMIT_SHORT_SHA},pipeline-id=${CI_PIPELINE_ID}"
+      aws s3 cp /tmp/agent.tar.gz.sha256 \
+        "s3://${S3_SCRIPTS_BUCKET}/tpot/agent.tar.gz.sha256" \
+        --region "${TF_VAR_aws_region}"
+
+      echo "Remote-node agent uploaded: s3://${S3_SCRIPTS_BUCKET}/tpot/agent.tar.gz"
+
     - echo "All scripts and digests uploaded successfully"
   dependencies:
     - validate-scripts

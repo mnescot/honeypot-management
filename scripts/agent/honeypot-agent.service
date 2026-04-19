@@ -1,0 +1,29 @@
+[Unit]
+Description=Honeypot Remote Node Agent
+Documentation=https://github.com/anthropic/honeypot-management
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=honeyagent
+Group=honeyagent
+SupplementaryGroups=docker
+WorkingDirectory=/opt/honeypot-agent
+Environment=PYTHONUNBUFFERED=1
+Environment=HONEYPOT_AGENT_CONFIG=/etc/honeypot-agent/config.yaml
+ExecStart=/opt/honeypot-agent/venv/bin/python /opt/honeypot-agent/agent.py
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/honeypot-agent /etc/honeypot-agent /etc/beelzebub
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

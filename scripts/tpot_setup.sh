@@ -526,6 +526,20 @@ server {
         proxy_read_timeout  60s;
     }
 
+    # Remote-node agent API — same FastAPI upstream, no Basic Auth injection.
+    # oauth2-proxy is configured to skip OIDC on these paths; FastAPI
+    # authenticates via the agent bearer token issued at enrolment.
+    location /api/v1/agent {
+        proxy_pass          http://127.0.0.1:8889;
+        proxy_http_version  1.1;
+        proxy_set_header    Host            \$host;
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_buffering     off;
+        client_max_body_size 4m;
+        proxy_read_timeout  90s;
+    }
+
     # T-Pot web UI — all other traffic.
     location / {
         proxy_pass          https://127.0.0.1:64297;
@@ -786,6 +800,8 @@ log "=== Phase 8e: Install management UI ==="
 
 MGMT_UI_S3_KEY="tpot/mgmt-ui.tar.gz"
 MGMT_UI_DIR="/opt/honeypot-mgmt"
+MGMT_STATE_DIR="/var/lib/honeypot-mgmt"
+AGENT_BUNDLE_DIR="${MGMT_UI_DIR}/agent-bundle"
 
 aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${MGMT_UI_S3_KEY}" \
   /tmp/mgmt-ui.tar.gz --region "$AWS_REGION"
@@ -793,6 +809,20 @@ aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/${MGMT_UI_S3_KEY}" \
 mkdir -p "${MGMT_UI_DIR}"
 tar -xzf /tmp/mgmt-ui.tar.gz -C "${MGMT_UI_DIR}" --strip-components=1
 rm -f /tmp/mgmt-ui.tar.gz
+
+# SQLite state directory (nodes, commands, honeypots, events_ingest).
+mkdir -p "${MGMT_STATE_DIR}"
+chmod 750 "${MGMT_STATE_DIR}"
+
+# Stage the remote-node agent bundle so the mgmt-ui can serve it at
+# /api/v1/agent/artefacts/agent.tar.gz for the bootstrap one-liner.
+mkdir -p "${AGENT_BUNDLE_DIR}"
+if aws s3 cp "s3://${SETUP_SCRIPT_S3_BUCKET}/tpot/agent.tar.gz" \
+     "${AGENT_BUNDLE_DIR}/agent.tar.gz" --region "$AWS_REGION"; then
+  log "agent bundle staged at ${AGENT_BUNDLE_DIR}/agent.tar.gz"
+else
+  log "WARNING: agent.tar.gz not found in S3; remote-node onboarding disabled"
+fi
 
 # Install Python dependencies in an isolated venv
 apt-get install -y python3-venv python3-pip
@@ -804,7 +834,7 @@ python3 -m venv "${MGMT_UI_DIR}/venv"
 usermod -aG docker tsec
 
 # Systemd service
-cat > /etc/systemd/system/honeypot-mgmt.service << 'MGMT_SERVICE'
+cat > /etc/systemd/system/honeypot-mgmt.service << MGMT_SERVICE
 [Unit]
 Description=T-Pot Honeypot Management UI
 After=network-online.target docker.service
@@ -814,7 +844,9 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/opt/honeypot-mgmt
-ExecStart=/opt/honeypot-mgmt/venv/bin/uvicorn app:app \
+Environment=TPOT_FQDN=${TPOT_FQDN}
+ReadWritePaths=/var/lib/honeypot-mgmt
+ExecStart=/opt/honeypot-mgmt/venv/bin/uvicorn app:app \\
     --host 127.0.0.1 --port 8889 --workers 1
 Restart=always
 RestartSec=5
@@ -902,6 +934,17 @@ skip_provider_button = true
 # Pass the authenticated user's email/name to upstream as headers.
 set_xauthrequest = true
 set_authorization_header = true
+
+# Remote-node agent API: agents authenticate via bearer token issued at
+# enrolment, not via OIDC. Bypass oauth2-proxy for these exact paths only.
+# FastAPI validates the bearer token independently (defence-in-depth).
+skip_auth_routes = [
+  "^/api/v1/agent/enrol\$",
+  "^/api/v1/agent/heartbeat\$",
+  "^/api/v1/agent/events\$",
+  "^/api/v1/agent/bootstrap/[A-Za-z0-9_-]{22}\$",
+  "^/api/v1/agent/artefacts/[a-z0-9_.-]+\$"
+]
 
 # Session cookie name
 cookie_name = "_tpot_auth"
