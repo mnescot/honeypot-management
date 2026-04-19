@@ -29,19 +29,40 @@ hostnamectl set-hostname "${tpot_hostname}"
 echo "127.0.1.1 ${tpot_hostname}" >> /etc/hosts
 
 # ---------------------------------------------------------------------------
-# 2. Basic system update and dependencies
+# 2. Prevent dpkg lock race with Ubuntu's background apt services.
 #
-# Ubuntu cloud-init kicks off unattended-upgrades + apt-daily.service in
-# parallel with user-data.  Both hold /var/lib/dpkg/lock-frontend for up
-# to several minutes on first boot.  Without a wait, our first
-# `apt-get install` aborts with "Could not get lock" and Phase A exits
-# (set -e) — leaving oauth2-proxy, the mgmt-UI, and T-Pot uninstalled,
-# which later surfaces as a 502 at the ALB.
+# Cloud-init kicks off apt-daily + apt-daily-upgrade on first boot, which
+# run unattended-upgrades.  On a fresh jammy AMI with kernel/security
+# updates queued, unattended-upgrades can hold /var/lib/dpkg/lock-frontend
+# for well over 10 minutes.  DPkg::Lock::Timeout=600 is not enough — the
+# timer expires mid-upgrade and our apt-get install aborts under set -e,
+# leaving oauth2-proxy / mgmt-UI / T-Pot uninstalled (manifests as 502 at
+# the ALB).
 #
-# Drop an apt config fragment that makes every apt-get call (here AND
-# in tpot_setup.sh) wait up to 10 minutes for the lock instead of
-# failing.  One file, covers the whole bootstrap.
+# Belt and braces:
+#   (a) Disable the apt-daily timers so they can't fire again during the
+#       20–30 min T-Pot install that follows.  We do NOT kill the
+#       currently-running unattended-upgrade process — SIGTERM mid-dpkg
+#       corrupts the package DB.
+#   (b) Wait unbounded for any in-flight dpkg to release the lock.
+#   (c) Write DPkg::Lock::Timeout=600 as a last-resort backstop for any
+#       later apt-get (e.g. inside the T-Pot Ansible installer).
 # ---------------------------------------------------------------------------
+echo "[$(date -u +%FT%TZ)] Disabling background apt timers..."
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
+echo "[$(date -u +%FT%TZ)] Waiting for dpkg lock to release..."
+i=0
+while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+            /var/lib/apt/lists/lock >/dev/null 2>&1; do
+  if [ $((i % 30)) -eq 0 ]; then
+    echo "[$(date -u +%FT%TZ)] dpkg still busy after $${i}s — holder: $(fuser /var/lib/dpkg/lock-frontend 2>&1 | head -1)"
+  fi
+  sleep 5
+  i=$((i+5))
+done
+echo "[$(date -u +%FT%TZ)] dpkg lock free after $${i}s — proceeding"
+
 mkdir -p /etc/apt/apt.conf.d
 cat > /etc/apt/apt.conf.d/99-lock-timeout << 'APTCONF'
 DPkg::Lock::Timeout "600";
