@@ -30,7 +30,23 @@ echo "127.0.1.1 ${tpot_hostname}" >> /etc/hosts
 
 # ---------------------------------------------------------------------------
 # 2. Basic system update and dependencies
+#
+# Ubuntu cloud-init kicks off unattended-upgrades + apt-daily.service in
+# parallel with user-data.  Both hold /var/lib/dpkg/lock-frontend for up
+# to several minutes on first boot.  Without a wait, our first
+# `apt-get install` aborts with "Could not get lock" and Phase A exits
+# (set -e) — leaving oauth2-proxy, the mgmt-UI, and T-Pot uninstalled,
+# which later surfaces as a 502 at the ALB.
+#
+# Drop an apt config fragment that makes every apt-get call (here AND
+# in tpot_setup.sh) wait up to 10 minutes for the lock instead of
+# failing.  One file, covers the whole bootstrap.
 # ---------------------------------------------------------------------------
+mkdir -p /etc/apt/apt.conf.d
+cat > /etc/apt/apt.conf.d/99-lock-timeout << 'APTCONF'
+DPkg::Lock::Timeout "600";
+APTCONF
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y --no-install-recommends \
