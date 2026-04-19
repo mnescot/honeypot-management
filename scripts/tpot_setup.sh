@@ -1006,50 +1006,79 @@ systemctl daemon-reload
 log "oauth2-proxy systemd unit written"
 
 # ---------------------------------------------------------------------------
-# Phase 12: iptables rules — belt-and-suspenders port restriction
+# Phase 12: iptables guard — pin management-path rules above tpotinit's NFQUEUE
 #
-# IMPORTANT: We do NOT use `netfilter-persistent save` here.
-# T-Pot's Ansible installer adds its own iptables rules during Phase 5b
-# (including rules that may restrict outbound traffic).  Calling
-# `netfilter-persistent save` would capture ALL of those rules and persist
-# them permanently, which can block the SSM agent's outbound HTTPS after
-# every reboot.  T-Pot manages its own iptables persistence separately.
+# T-Pot's tpotinit container runs rules.sh on every `docker compose up`.
+# rules.sh adds ACCEPT rules for known honeypot ports plus a catch-all
+# NFQUEUE rule on INPUT that captures everything else.  Two consequences:
 #
-# Instead we apply our single rule immediately and register a dedicated
-# systemd one-shot service that re-applies ONLY this rule on each boot,
-# after Docker and T-Pot have had a chance to set up their own chains.
+#   1. Port 4180 (oauth2-proxy / ALB backend) is not in T-Pot's allowlist,
+#      so SYNs from the ALB are silently queued and dropped → ALB health
+#      check fails → 504 from the ALB.
+#   2. Return packets for host-originated outbound connections (SSM agent
+#      reporting to ssm.<region>.amazonaws.com, apt, Docker Hub) arrive on
+#      INPUT and hit the NFQUEUE catch-all → queued and dropped → SSM
+#      "RequestError: send request failed" ~20 min after boot.
+#
+# Fix: a guard script that keeps three rules pinned at the top of INPUT.
+# Run once at boot and every 60 s via a systemd timer, so even when
+# tpotinit re-runs rules.sh (restart, upgrade, or crash), our rules are
+# restored within one minute.  Delete-then-insert is idempotent: no
+# duplicates, and the rule ends up at position 1 either way.
+#
+# We do NOT use `netfilter-persistent save` — T-Pot's Ansible installer
+# adds rules we don't want to persist wholesale across reboots.
 # ---------------------------------------------------------------------------
-log "=== Phase 12: iptables ==="
+log "=== Phase 12: iptables guard ==="
 
-# Apply immediately for this session
-iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
-log "iptables rule applied (current session)"
+cat > /usr/local/sbin/tpot-iptables-guard.sh << 'GUARD'
+#!/bin/bash
+set -u
+ensure_top() {
+    iptables -D INPUT "$@" 2>/dev/null || true
+    iptables -I INPUT 1 "$@"
+}
+# (1) Return packets for outbound host connections — fixes SSM + any other
+#     host-originated outbound HTTPS (apt, Docker Hub, etc.).
+ensure_top -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# (2) ALB → oauth2-proxy on 4180 — fixes ALB health check and 504.
+ensure_top -p tcp --dport 4180 -j ACCEPT
+# (3) Restrict T-Pot WebUI port 64297 to loopback (defence in depth).
+ensure_top -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
+GUARD
+chmod 755 /usr/local/sbin/tpot-iptables-guard.sh
 
-# Persist these rules across reboots via a dedicated service.
-# Port 4180 (oauth2-proxy / ALB backend): T-Pot's tpotinit container runs
-# rules.sh on every compose up, which adds ACCEPT rules for known honeypot
-# ports and a catch-all NFQUEUE rule for everything else.  Port 4180 is not
-# in T-Pot's list, so SYNs from the ALB are silently queued and dropped.
-# Using iptables -I (insert at top) ensures the ACCEPT lands before NFQUEUE
-# regardless of whether this service runs before or after tpotinit.
 cat > /etc/systemd/system/tpot-iptables.service << 'IPTABLES_UNIT'
 [Unit]
-Description=T-Pot iptables: restrict port 64297 to loopback; allow port 4180 from ALB
+Description=T-Pot iptables guard — pin management rules above tpotinit's NFQUEUE
 After=network.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/sbin/iptables -I INPUT -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
-ExecStart=/sbin/iptables -I INPUT -p tcp --dport 4180 -j ACCEPT
-RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tpot-iptables-guard.sh
 
 [Install]
 WantedBy=multi-user.target
 IPTABLES_UNIT
 
+cat > /etc/systemd/system/tpot-iptables.timer << 'IPTABLES_TIMER'
+[Unit]
+Description=Re-apply tpot-iptables guard every 60 s so rules survive tpotinit restarts
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=tpot-iptables.service
+
+[Install]
+WantedBy=timers.target
+IPTABLES_TIMER
+
 systemctl daemon-reload
-systemctl enable tpot-iptables.service
-log "tpot-iptables.service registered — rule will be re-applied on every boot"
+systemctl enable --now tpot-iptables.timer
+# Apply immediately for this session — don't wait for the 30 s first fire.
+/usr/local/sbin/tpot-iptables-guard.sh
+log "tpot-iptables guard + 60s timer registered and applied"
 
 # ---------------------------------------------------------------------------
 # Phase 13: Apply compose override and start services
@@ -1275,10 +1304,15 @@ log "=== Phase 5b: Run T-Pot installer (HIVE/standalone mode) ==="
 #   -p  web UI password
 cd "$TPOT_INSTALL_DIR"
 
+# Redirect installer stdio to $LOG only. `docker compose pull` emits a
+# progress-stream flood (thousands of "Extracting NB" lines) that otherwise
+# fills the cloud-init journal and blows past the 64 KB EC2 console-output
+# cap, making remote diagnosis impossible.  BUILDKIT_PROGRESS=plain collapses
+# the pull output into a single line per layer.
 sudo -u tsec bash -c "
   cd '$TPOT_INSTALL_DIR'
-  ./install.sh -s -t h -u '$TPOT_WEB_USER' -p '$TPOT_WEB_PASSWORD'
-" || {
+  BUILDKIT_PROGRESS=plain ./install.sh -s -t h -u '$TPOT_WEB_USER' -p '$TPOT_WEB_PASSWORD'
+" >>"$LOG" 2>&1 || {
   log "WARNING: T-Pot installer exited non-zero. Checking if services are running..."
   if [ ! -f "$TPOT_INSTALL_DIR/.env" ]; then
     log "ERROR: T-Pot install appears to have failed (.env not found)"
