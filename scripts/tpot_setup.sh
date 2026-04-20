@@ -177,6 +177,85 @@ log "Docker $(docker --version)"
 log "Docker Compose $(docker compose version)"
 
 # ---------------------------------------------------------------------------
+# Phase 3b: Install iptables guard EARLY (Phase A, pre-install)
+#
+# Why this lives in Phase A, not Phase B:
+#
+#   The guard pins three rules at the top of INPUT:
+#     (1) ESTABLISHED,RELATED ACCEPT — keeps SSM return traffic alive.
+#     (2) tcp --dport 4180 ACCEPT   — keeps ALB → oauth2-proxy path alive.
+#     (3) tcp --dport 64297 DROP    — defence-in-depth for T-Pot WebUI.
+#
+#   Previously this was installed in Phase 12 (inside Phase B /
+#   tpot-post-install.service).  If Phase B aborts for ANY reason
+#   (e.g. an unset variable under `set -u`, an apt lock, a failed SSM
+#   fetch), Phase 12 never runs, tpotinit's NFQUEUE catch-all stays
+#   unopposed on INPUT, and the host silently loses SSM + ALB within
+#   minutes of tpotinit starting.
+#
+#   Installing the guard in Phase A makes management connectivity
+#   independent of Phase B success.  The guard's 60 s timer re-pins
+#   rules even after tpotinit later inserts its NFQUEUE catch-all —
+#   running ahead of tpotinit is just a no-op for rule (3), fine.
+#
+# Phase 12 in Phase B remains as an idempotent re-install (safe
+# belt-and-braces: same file contents, `enable --now` is idempotent).
+# ---------------------------------------------------------------------------
+log "=== Phase 3b: Install iptables guard (pre-install, Phase A) ==="
+
+cat > /usr/local/sbin/tpot-iptables-guard.sh << 'GUARD'
+#!/bin/bash
+set -u
+ensure_top() {
+    iptables -D INPUT "$@" 2>/dev/null || true
+    iptables -I INPUT 1 "$@"
+}
+# (1) Return packets for outbound host connections — fixes SSM + any other
+#     host-originated outbound HTTPS (apt, Docker Hub, etc.).
+ensure_top -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# (2) ALB → oauth2-proxy on 4180 — fixes ALB health check and 504.
+ensure_top -p tcp --dport 4180 -j ACCEPT
+# (3) Restrict T-Pot WebUI port 64297 to loopback (defence in depth).
+ensure_top -p tcp --dport 64297 ! -s 127.0.0.1 -j DROP
+GUARD
+chmod 755 /usr/local/sbin/tpot-iptables-guard.sh
+
+cat > /etc/systemd/system/tpot-iptables.service << 'IPTABLES_UNIT'
+[Unit]
+Description=T-Pot iptables guard — pin management rules above tpotinit's NFQUEUE
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tpot-iptables-guard.sh
+
+[Install]
+WantedBy=multi-user.target
+IPTABLES_UNIT
+
+cat > /etc/systemd/system/tpot-iptables.timer << 'IPTABLES_TIMER'
+[Unit]
+Description=Re-apply tpot-iptables guard every 60 s so rules survive tpotinit restarts
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=tpot-iptables.service
+
+[Install]
+WantedBy=timers.target
+IPTABLES_TIMER
+
+systemctl daemon-reload
+systemctl enable --now tpot-iptables.timer
+# Apply immediately — don't wait for the 30 s first fire.  At this point
+# tpotinit doesn't exist yet, so rules (2) and (3) just sit at the top of
+# an otherwise-default INPUT chain and become load-bearing the moment
+# tpotinit's NFQUEUE catch-all is added later in Phase B.
+/usr/local/sbin/tpot-iptables-guard.sh
+log "tpot-iptables guard + 60 s timer registered and applied (Phase A)"
+
+# ---------------------------------------------------------------------------
 # Phase 4: Create T-Pot user (tsec)
 # ---------------------------------------------------------------------------
 log "=== Phase 4: Create tsec user ==="
@@ -1039,30 +1118,23 @@ systemctl daemon-reload
 log "oauth2-proxy systemd unit written"
 
 # ---------------------------------------------------------------------------
-# Phase 12: iptables guard — pin management-path rules above tpotinit's NFQUEUE
+# Phase 12: iptables guard — idempotent re-install (primary install is Phase 3b)
 #
+# The guard script, systemd unit, and timer were already installed in
+# Phase 3b (Phase A) so that management connectivity survives even a
+# complete Phase B failure.  This block re-writes the same files and
+# re-enables the timer; `systemctl enable --now` and the file writes
+# are all idempotent, so the cost is zero and the benefit is that
+# anyone reading Phase B in isolation still sees the guard.
+#
+# Background (also documented in Phase 3b):
 # T-Pot's tpotinit container runs rules.sh on every `docker compose up`.
 # rules.sh adds ACCEPT rules for known honeypot ports plus a catch-all
-# NFQUEUE rule on INPUT that captures everything else.  Two consequences:
-#
-#   1. Port 4180 (oauth2-proxy / ALB backend) is not in T-Pot's allowlist,
-#      so SYNs from the ALB are silently queued and dropped → ALB health
-#      check fails → 504 from the ALB.
-#   2. Return packets for host-originated outbound connections (SSM agent
-#      reporting to ssm.<region>.amazonaws.com, apt, Docker Hub) arrive on
-#      INPUT and hit the NFQUEUE catch-all → queued and dropped → SSM
-#      "RequestError: send request failed" ~20 min after boot.
-#
-# Fix: a guard script that keeps three rules pinned at the top of INPUT.
-# Run once at boot and every 60 s via a systemd timer, so even when
-# tpotinit re-runs rules.sh (restart, upgrade, or crash), our rules are
-# restored within one minute.  Delete-then-insert is idempotent: no
-# duplicates, and the rule ends up at position 1 either way.
-#
-# We do NOT use `netfilter-persistent save` — T-Pot's Ansible installer
-# adds rules we don't want to persist wholesale across reboots.
+# NFQUEUE rule on INPUT that captures everything else.  Without the
+# guard, that catch-all drops ALB SYNs on 4180 (→ 504) and return
+# packets for host-originated outbound HTTPS (→ SSM disconnect).
 # ---------------------------------------------------------------------------
-log "=== Phase 12: iptables guard ==="
+log "=== Phase 12: iptables guard (idempotent re-install) ==="
 
 cat > /usr/local/sbin/tpot-iptables-guard.sh << 'GUARD'
 #!/bin/bash
