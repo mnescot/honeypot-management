@@ -50,6 +50,10 @@ AZURE_TENANT_ID="${AZURE_TENANT_ID:?AZURE_TENANT_ID is required}"
 AZURE_CLIENT_ID="${AZURE_CLIENT_ID:?AZURE_CLIENT_ID is required}"
 AWS_REGION="${AWS_REGION:?AWS_REGION is required}"
 
+# Optional: Bedrock model IDs for the remote-node deploy picker (comma-separated,
+# no "bedrock:" prefix). Empty when enable_bedrock=false in Terraform.
+BEDROCK_MODEL_IDS="${BEDROCK_MODEL_IDS:-}"
+
 # SSM paths for secrets (set by user_data.sh — paths are not sensitive)
 SSM_PATH_WEB_PASSWORD="${SSM_PATH_WEB_PASSWORD:?SSM_PATH_WEB_PASSWORD is required}"
 SSM_PATH_AZURE_CLIENT_SECRET="${SSM_PATH_AZURE_CLIENT_SECRET:?SSM_PATH_AZURE_CLIENT_SECRET is required}"
@@ -553,6 +557,22 @@ server {
         proxy_read_timeout  90s;
     }
 
+    # Centralised LLM proxy — remote Beelzebub instances POST OpenAI-compatible
+    # chat completions here. FastAPI validates a per-node LLM bearer token
+    # (distinct from the agent heartbeat token) and routes to local Ollama
+    # or Amazon Bedrock based on the "model" prefix. LLM inference can be
+    # slow, so the read timeout is raised to 120s.
+    location /llm/ {
+        proxy_pass          http://127.0.0.1:8889;
+        proxy_http_version  1.1;
+        proxy_set_header    Host            \$host;
+        proxy_set_header    X-Real-IP       \$remote_addr;
+        proxy_set_header    X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_buffering     off;
+        client_max_body_size 1m;
+        proxy_read_timeout  120s;
+    }
+
     # T-Pot web UI — all other traffic.
     location / {
         proxy_pass          https://127.0.0.1:64297;
@@ -858,6 +878,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/honeypot-mgmt
 Environment=TPOT_FQDN=${TPOT_FQDN}
+Environment=AWS_REGION=${AWS_REGION}
+Environment=BEDROCK_MODEL_IDS=${BEDROCK_MODEL_IDS}
 ReadWritePaths=/var/lib/honeypot-mgmt
 ExecStart=/opt/honeypot-mgmt/venv/bin/uvicorn app:app \\
     --host 127.0.0.1 --port 8889 --workers 1
@@ -951,12 +973,18 @@ set_authorization_header = true
 # Remote-node agent API: agents authenticate via bearer token issued at
 # enrolment, not via OIDC. Bypass oauth2-proxy for these exact paths only.
 # FastAPI validates the bearer token independently (defence-in-depth).
+#
+# The /llm/v1/* paths are used by remote Beelzebub instances for OpenAI-
+# compatible chat completions; FastAPI validates a per-node LLM bearer
+# token before routing to Ollama or Bedrock.
 skip_auth_routes = [
   "^/api/v1/agent/enrol\$",
   "^/api/v1/agent/heartbeat\$",
   "^/api/v1/agent/events\$",
   "^/api/v1/agent/bootstrap/[A-Za-z0-9_-]{22}\$",
-  "^/api/v1/agent/artefacts/[a-z0-9_.-]+\$"
+  "^/api/v1/agent/artefacts/[a-z0-9_.-]+\$",
+  "^/llm/v1/chat/completions\$",
+  "^/llm/v1/models\$"
 ]
 
 # Session cookie name

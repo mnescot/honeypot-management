@@ -41,8 +41,19 @@
   <div class="col-md-4">
     <div class="card h-100"><div class="card-body">
       <h6 class="text-muted">Actions</h6>
-      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/deploy-beelzebub" class="d-inline">
-        <button class="btn btn-sm btn-primary mb-1" {% if node.revoked_at %}disabled{% endif %}>Deploy Beelzebub</button>
+      <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/deploy-beelzebub" class="mb-2">
+        <div class="input-group input-group-sm mb-1">
+          <label class="input-group-text" for="llm-model">LLM</label>
+          <select class="form-select form-select-sm" id="llm-model" name="model" {% if node.revoked_at %}disabled{% endif %}>
+            {% if models %}
+              {% for m in models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+            {% else %}
+              <option value="phi3" selected>phi3</option>
+            {% endif %}
+          </select>
+        </div>
+        <button class="btn btn-sm btn-primary" {% if node.revoked_at %}disabled{% endif %}>Deploy Beelzebub</button>
+        <div class="form-text small">Routed via central /llm/v1; prefix <code>bedrock:</code> picks a Bedrock model.</div>
       </form>
       <form method="post" action="{{ prefix }}/nodes/{{ node.id }}/stop-beelzebub" class="d-inline">
         <button class="btn btn-sm btn-outline-secondary mb-1" {% if node.revoked_at %}disabled{% endif %}>Stop</button>

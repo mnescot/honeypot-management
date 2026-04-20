@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import subprocess
 import yaml
 import httpx
@@ -22,8 +23,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 import db as db_module
-from db import utcnow
+from db import sha256, utcnow
 from agent_api import router as agent_router, create_enrolment_token, queue_command
+from llm_proxy import router as llm_router
 
 log = logging.getLogger("honeypot-mgmt")
 logging.basicConfig(level=logging.INFO)
@@ -120,6 +122,7 @@ async def _shutdown() -> None:
 
 
 app.include_router(agent_router)
+app.include_router(llm_router)
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -484,6 +487,21 @@ async def nodes_new_submit(request: Request, label: str = Form(...)):
     )
 
 
+def _available_llm_models(local: list[dict]) -> list[str]:
+    """Combine Ollama model tags with any configured Bedrock IDs.
+
+    Bedrock IDs are provided via the BEDROCK_MODEL_IDS env var
+    (comma-separated, no prefix); rendered in the picker as
+    `bedrock:<id>` to match the prefix llm_proxy routes on.
+    """
+    names = [m.get("name", "") for m in local if m.get("name")]
+    bedrock_ids = os.environ.get("BEDROCK_MODEL_IDS", "").strip()
+    if bedrock_ids:
+        for mid in (m.strip() for m in bedrock_ids.split(",") if m.strip()):
+            names.append(f"bedrock:{mid}")
+    return names
+
+
 @app.get(PREFIX + "/nodes/{node_id}", response_class=HTMLResponse)
 async def node_detail(request: Request, node_id: int):
     db = request.app.state.db
@@ -496,17 +514,22 @@ async def node_detail(request: Request, node_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="unknown node")
     node = _node_view(dict(row))
-    cmd_rows = await (await db.execute(
-        """SELECT id, type, created_at, delivered_at, ack_at, ack_status, ack_output
-             FROM commands WHERE node_id = ?
-             ORDER BY created_at DESC LIMIT 50""",
-        (node_id,),
-    )).fetchall()
+    cmd_rows, local_models = await asyncio.gather(
+        db.execute(
+            """SELECT id, type, created_at, delivered_at, ack_at, ack_status, ack_output
+                 FROM commands WHERE node_id = ?
+                 ORDER BY created_at DESC LIMIT 50""",
+            (node_id,),
+        ),
+        ollama_models(),
+    )
+    cmd_rows = await cmd_rows.fetchall()
     return templates.TemplateResponse("node_detail.html", {
         "request":  request,
         "prefix":   PREFIX,
         "node":     node,
         "commands": [dict(c) for c in cmd_rows],
+        "models":   _available_llm_models(local_models),
     })
 
 
@@ -522,14 +545,121 @@ async def _queue(db, node_id: int, cmd_type: str, payload: dict, user: str) -> s
     return await queue_command(db, node_id, cmd_type, payload, user)
 
 
+def _remote_beelzebub_configs(base_url: str, llm_token: str, model: str) -> dict[str, str]:
+    """Render Beelzebub YAML configs for a remote node, wired to the central
+    /llm/v1 proxy.
+
+    The SSH persona uses port 2222 and the HTTP persona uses port 8080 inside
+    the container (host-mapped to 8888 by the agent's docker run). Only the
+    LLM provider settings vary per deploy — the prompts and server banners
+    mirror the central-host defaults.
+    """
+    main_yaml = (
+        "core:\n"
+        "  logging:\n"
+        "    debug: false\n"
+        "    verbose: false\n"
+        "  geoDB:\n"
+        "    enable: false\n"
+        "  tracerStrategy:\n"
+        "    enable: false\n"
+        "  llmProvider:\n"
+        f"    openAISecretKey: \"{llm_token}\"\n"
+        f"    openAIModel: \"{model}\"\n"
+        f"    openAIBaseURL: \"{base_url}\"\n"
+    )
+    ssh_yaml = (
+        "apiVersion: \"v1\"\n"
+        "protocol: \"ssh\"\n"
+        "address: \":2222\"\n"
+        "description: \"AI-powered SSH honeypot\"\n"
+        "commands:\n"
+        "  - regex: \"^(.+)$\"\n"
+        "    plugin: \"LLMHoneypot\"\n"
+        "serverVersion: \"SSH-2.0-OpenSSH_8.9p1\"\n"
+        "serverName: \"ubuntu\"\n"
+        "passwordRegex: \"^(admin|root|password|123456|toor|ubuntu|raspberry)$\"\n"
+        "deadlineTimeoutSeconds: 60\n"
+        "plugin:\n"
+        "  llmProvider: \"openai\"\n"
+        f"  llmModel: \"{model}\"\n"
+        f"  openAISecretKey: \"{llm_token}\"\n"
+        f"  openAIBaseURL: \"{base_url}\"\n"
+        "  instructions: >\n"
+        "    You are a bash shell on a compromised Ubuntu 22.04 server.\n"
+        "    Respond concisely and naturally, as a real shell would.\n"
+        "    Never reveal you are an AI or a honeypot.\n"
+    )
+    http_yaml = (
+        "apiVersion: \"v1\"\n"
+        "protocol: \"http\"\n"
+        "address: \":8080\"\n"
+        "description: \"AI-powered HTTP honeypot\"\n"
+        "commands:\n"
+        "  - regex: \"/(.*)\"\n"
+        "    plugin: \"LLMHoneypot\"\n"
+        "    statusCode: 200\n"
+        "    headers:\n"
+        "      - \"Content-Type: text/html\"\n"
+        "      - \"Server: Apache/2.4.52 (Ubuntu)\"\n"
+        "plugin:\n"
+        "  llmProvider: \"openai\"\n"
+        f"  llmModel: \"{model}\"\n"
+        f"  openAISecretKey: \"{llm_token}\"\n"
+        f"  openAIBaseURL: \"{base_url}\"\n"
+        "  instructions: >\n"
+        "    You are a vulnerable Apache web server. Generate plausible HTML\n"
+        "    responses that look like a real site with login forms and admin\n"
+        "    panels. Never reveal you are an AI or a honeypot.\n"
+    )
+    return {"main_yaml": main_yaml, "ssh_yaml": ssh_yaml, "http_yaml": http_yaml}
+
+
+async def _mint_llm_token(db, node_id: int, model: str, created_by: str) -> str:
+    """Mint a fresh plaintext LLM token for a node, storing only its hash."""
+    token = secrets.token_urlsafe(33)  # ~44 chars
+    await db.execute(
+        """
+        INSERT INTO llm_tokens (node_id, token_sha256, model, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+            token_sha256 = excluded.token_sha256,
+            model = excluded.model,
+            created_at = excluded.created_at,
+            created_by = excluded.created_by
+        """,
+        (node_id, sha256(token), model, utcnow(), created_by),
+    )
+    await db.commit()
+    return token
+
+
 @app.post(PREFIX + "/nodes/{node_id}/deploy-beelzebub")
-async def deploy_beelzebub(request: Request, node_id: int):
+async def deploy_beelzebub(
+    request: Request,
+    node_id: int,
+    model: str = Form("phi3"),
+):
+    db = request.app.state.db
+    user = _admin_user(request)
+    fqdn = os.environ.get("TPOT_FQDN", "").strip()
+    if not fqdn:
+        raise HTTPException(
+            status_code=500,
+            detail="TPOT_FQDN is not configured; cannot route remote Beelzebub to the central LLM proxy",
+        )
+    # 1) Pull + run the container on the remote.
     await _queue(
-        request.app.state.db, node_id,
+        db, node_id,
         "install_beelzebub",
         {"image": "mariocandela/beelzebub:latest"},
-        _admin_user(request),
+        user,
     )
+    # 2) Mint a per-node LLM token and push configs wired to /llm/v1.
+    llm_token = await _mint_llm_token(db, node_id, model, user)
+    base_url = f"https://{fqdn}/llm/v1"
+    cfgs = _remote_beelzebub_configs(base_url, llm_token, model)
+    await _queue(db, node_id, "apply_beelzebub_config", cfgs, user)
     return RedirectResponse(f"{PREFIX}/nodes/{node_id}", status_code=303)
 
 

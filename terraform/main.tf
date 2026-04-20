@@ -106,6 +106,9 @@ resource "aws_instance" "tpot" {
     ssm_path_web_password        = aws_ssm_parameter.tpot_web_password.name
     ssm_path_azure_client_secret = aws_ssm_parameter.azure_client_secret.name
     ssm_path_oauth2_cookie_secret = aws_ssm_parameter.oauth2_cookie_secret.name
+    # Bedrock model-picker list — surfaced to the mgmt-ui via BEDROCK_MODEL_IDS.
+    # Empty string when Bedrock is disabled; llm_proxy skips the picker entries.
+    bedrock_model_ids            = var.enable_bedrock ? join(",", var.bedrock_default_models) : ""
   })
 
   # Ensure the instance profile exists before the instance is created

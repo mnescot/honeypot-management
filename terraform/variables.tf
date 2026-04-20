@@ -176,3 +176,31 @@ variable "ssm_logs_s3_bucket" {
   type        = string
   default     = ""
 }
+
+# ---------------------------------------------------------------------------
+# Amazon Bedrock (optional LLM backend for honeypots)
+#
+# When enabled, the mgmt-ui exposes a unified OpenAI-compatible proxy at
+# /llm/v1/chat/completions and routes model IDs prefixed with "bedrock:"
+# (e.g. "bedrock:anthropic.claude-3-haiku-20240307-v1:0") to Bedrock via
+# boto3 using the EC2 instance IAM role. Non-prefixed model IDs continue
+# to route to the local Ollama daemon.
+# ---------------------------------------------------------------------------
+
+variable "enable_bedrock" {
+  description = "If true, grant the EC2 instance IAM role permission to invoke Amazon Bedrock models and provision a VPC interface endpoint for bedrock-runtime so traffic stays on the AWS backbone."
+  type        = bool
+  default     = false
+}
+
+variable "bedrock_model_arns" {
+  description = "List of Bedrock foundation-model ARNs the instance is allowed to invoke (e.g. arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0). Used to scope the bedrock:InvokeModel/Converse policy. Required when enable_bedrock = true; ignored otherwise."
+  type        = list(string)
+  default     = []
+}
+
+variable "bedrock_default_models" {
+  description = "List of Bedrock model IDs (without the 'bedrock:' prefix) to offer in the mgmt-ui model picker when deploying honeypots to remote nodes. Purely cosmetic; the IAM policy controls what can actually be invoked."
+  type        = list(string)
+  default     = []
+}

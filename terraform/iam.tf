@@ -214,6 +214,39 @@ resource "aws_iam_role_policy" "tpot_ssm_s3_logs" {
 }
 
 # ---------------------------------------------------------------------------
+# Inline policy — Amazon Bedrock (optional)
+#
+# When var.enable_bedrock is true, allow the instance to invoke the Bedrock
+# foundation models listed in var.bedrock_model_arns. InvokeModel and
+# Converse cover the sync and streaming APIs used by the mgmt-ui llm_proxy.
+# The policy is scoped to the exact model ARNs — there is no wildcard grant.
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "tpot_bedrock" {
+  count = var.enable_bedrock && length(var.bedrock_model_arns) > 0 ? 1 : 0
+
+  name = "tpot-bedrock-invoke"
+  role = aws_iam_role.tpot.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "InvokeScopedFoundationModels"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:Converse",
+          "bedrock:ConverseStream",
+        ]
+        Resource = var.bedrock_model_arns
+      }
+    ]
+  })
+}
+
+# ---------------------------------------------------------------------------
 # Instance profile
 # ---------------------------------------------------------------------------
 

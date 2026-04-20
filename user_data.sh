@@ -141,6 +141,10 @@ export SSM_PATH_OAUTH2_COOKIE_SECRET="${ssm_path_oauth2_cookie_secret}"
 # S3 bucket where CI stages setup scripts and supplementary binaries
 export SETUP_SCRIPT_S3_BUCKET="${setup_script_s3_bucket}"
 
+# Bedrock model IDs offered in the remote-node deploy picker (comma-separated,
+# no "bedrock:" prefix).  Empty when Bedrock is disabled in Terraform.
+export BEDROCK_MODEL_IDS="${bedrock_model_ids}"
+
 # ---------------------------------------------------------------------------
 # 5. Run the full T-Pot installation
 # ---------------------------------------------------------------------------

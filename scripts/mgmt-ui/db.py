@@ -88,6 +88,18 @@ MIGRATIONS = [
         indexed INTEGER NOT NULL DEFAULT 0
     );
     """,
+    # v2: per-node LLM tokens used by remote Beelzebub to authenticate against
+    # the central /llm/v1/* proxy. Kept in a separate table so rotating the
+    # LLM token at each deploy does not disturb the agent heartbeat token.
+    """
+    CREATE TABLE IF NOT EXISTS llm_tokens (
+        node_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+        token_sha256 TEXT UNIQUE NOT NULL,
+        model TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT
+    );
+    """,
 ]
 
 
