@@ -224,6 +224,7 @@ OAUTH2_PROXY_VERSION=${OAUTH2_PROXY_VERSION}
 OAUTH2_PROXY_BIN=${OAUTH2_PROXY_BIN}
 OAUTH2_PROXY_CONF_DIR=${OAUTH2_PROXY_CONF_DIR}
 BEELZEBUB_VERSION=${BEELZEBUB_VERSION}
+BEDROCK_MODEL_IDS=${BEDROCK_MODEL_IDS}
 ENVFILE
 chmod 600 /etc/tpot-post-install.env
 log "Post-install env file written to /etc/tpot-post-install.env"
@@ -257,6 +258,10 @@ log "============================================================"
 # Source non-sensitive config written by Phase A
 # shellcheck disable=SC1091
 source /etc/tpot-post-install.env
+
+# Default optional vars so `set -u` doesn't abort when an older env file
+# (written by an earlier deploy) lacks them. Must appear after the source.
+BEDROCK_MODEL_IDS="${BEDROCK_MODEL_IDS:-}"
 
 # Re-fetch secrets from SSM — secrets are never persisted to disk.
 # Retry loop handles the case where the SSM endpoint is briefly unreachable
