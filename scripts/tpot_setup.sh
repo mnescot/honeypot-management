@@ -1073,6 +1073,13 @@ skip_auth_routes = [
 
 # Session cookie name
 cookie_name = "_tpot_auth"
+
+# Sign-out redirect: allow /oauth2/sign_out?rd=... to bounce the browser to
+# Entra's v2.0 logout endpoint, so clicking "Sign out" in the mgmt-UI
+# terminates both the oauth2-proxy session AND the Entra SSO session.
+# Without this whitelist, oauth2-proxy ignores the rd= param for external
+# hosts and the user would stay signed in to Entra.
+whitelist_domains = ["login.microsoftonline.com"]
 EOF
 
 chown root:tsec "${OAUTH2_PROXY_CONF_DIR}/oauth2-proxy.cfg"

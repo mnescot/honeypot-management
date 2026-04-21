@@ -18,6 +18,7 @@ import docker as docker_sdk
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -55,6 +56,29 @@ def _is_infra(name: str) -> bool:
 
 app       = FastAPI(title="T-Pot Management UI", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def _build_logout_url() -> str:
+    # Two-step SSO sign-out:
+    #   1. /oauth2/sign_out clears oauth2-proxy's session cookie.
+    #   2. rd= sends the browser on to Entra's v2.0 logout endpoint, which
+    #      invalidates the Entra session and returns the user to the app
+    #      root (where oauth2-proxy will then bounce them to login again).
+    # If env vars are missing (dev / first boot), fall back to local-only
+    # sign-out so the link still works.
+    fqdn   = os.environ.get("TPOT_FQDN", "")
+    tenant = os.environ.get("AZURE_TENANT_ID", "")
+    if not fqdn or not tenant:
+        return "/oauth2/sign_out"
+    post_logout = quote(f"https://{fqdn}/", safe="")
+    entra = (
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/logout"
+        f"?post_logout_redirect_uri={post_logout}"
+    )
+    return f"/oauth2/sign_out?rd={quote(entra, safe='')}"
+
+
+templates.env.globals["logout_url"] = _build_logout_url()
 
 # Node health thresholds (seconds since last_seen).
 ONLINE_MAX_SEC   = 90       # 3× heartbeat
